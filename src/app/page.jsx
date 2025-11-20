@@ -1,37 +1,35 @@
 "use client";
-import { lazy, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import CssBaseline from "@mui/material/CssBaseline";
-import AppBar from "@mui/material/AppBar";
-import Switch from "@mui/material/Switch";
+import { ThemeProvider, createTheme } from "@mui/material/styles";
 import {
   DndContext,
   closestCenter,
-  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
-  DragOverlay,
 } from "@dnd-kit/core";
-import {
-  arrayMove,
-  arraySwap,
-  SortableContext,
-  sortableKeyboardCoordinates,
-} from "@dnd-kit/sortable";
-import CardContent from "@mui/material/CardContent";
-import CardMedia from "@mui/material/CardMedia";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import { ThemeProvider, createTheme } from "@mui/material/styles";
-import Toolbar from "@mui/material/Toolbar";
-import Typography from "@mui/material/Typography";
+import { arraySwap, SortableContext } from "@dnd-kit/sortable";
 import { useDebouncedCallback } from "use-debounce";
-import photos from "./photos.json";
 
 import { Grid } from "./Grid";
 import { SortableArea } from "./SortableArea";
 import { Area } from "./Area";
 import { nanoid } from "nanoid";
+
+import {
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  Legend,
+} from "recharts";
 
 const dark = createTheme({
   palette: {
@@ -45,40 +43,29 @@ const light = createTheme({
   },
 });
 
-function powerRandom() {
-  return Math.pow(Math.random(), 2);
-}
+// sample data for charts
+const hourlyData = [
+  { time: "00:00", value: 40 },
+  { time: "02:00", value: 30 },
+  { time: "04:00", value: 20 },
+  { time: "06:00", value: 27 },
+  { time: "08:00", value: 50 },
+  { time: "10:00", value: 65 },
+  { time: "12:00", value: 80 },
+  { time: "14:00", value: 75 },
+  { time: "16:00", value: 60 },
+  { time: "18:00", value: 55 },
+  { time: "20:00", value: 48 },
+  { time: "22:00", value: 42 },
+];
 
-function sqrtRandom() {
-  return Math.sqrt(Math.random());
-}
-
-function superRandom(max, min = 0) {
-  return Math.round(sqrtRandom() * powerRandom() * (max - min)) + min;
-}
-
-function random(max, min = 0) {
-  return Math.round(Math.random() * (max - min)) + min;
-}
-
-function toHex(n) {
-  const hex = n.toString(16);
-  return hex.length < 2 ? `${hex}${hex}` : hex;
-}
-function randomHex() {
-  const r = toHex(random(255));
-  const g = toHex(random(255));
-  const b = toHex(random(255));
-  return `#${r}${g}${b}`;
-}
-
-function timeString() {
-  const date = new Date();
-  const ss = date.getSeconds().toString().padStart(2, "0");
-  const mm = date.getMinutes().toString().padStart(2, "0");
-  const hh = date.getHours().toString().padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
+const categoryData = [
+  { name: "A", count: 30 },
+  { name: "B", count: 55 },
+  { name: "C", count: 20 },
+  { name: "D", count: 75 },
+  { name: "E", count: 45 },
+];
 
 function WidgetBase({ children, fill, scroll, ...props }) {
   return (
@@ -98,18 +85,65 @@ function WidgetBase({ children, fill, scroll, ...props }) {
     </Box>
   );
 }
+
+function LineChartWidget() {
+  return (
+    <WidgetBase fill>
+      <Box sx={{ flex: 1, width: "100%", height: "100%", p: 1 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={hourlyData}
+            margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="time" />
+            <YAxis />
+            <Tooltip />
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke="#8884d8"
+              strokeWidth={2}
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </Box>
+    </WidgetBase>
+  );
+}
+
+function BarChartWidget() {
+  return (
+    <WidgetBase fill>
+      <Box sx={{ flex: 1, width: "100%", height: "100%", p: 1 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={categoryData}
+            margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Bar dataKey="count" fill="#82ca9d" />
+          </BarChart>
+        </ResponsiveContainer>
+      </Box>
+    </WidgetBase>
+  );
+}
+
+// Keep some of the original simple widgets for variety
 function TimeWidget() {
-  // Render a deterministic placeholder on the server and then populate the real time on the client.
-  // This avoids server/client markup mismatches caused by Date() during SSR.
   const [time, setTime] = useState(null);
   useEffect(() => {
-    setTime(timeString());
+    setTime(new Date().toLocaleTimeString());
     const interval = setInterval(() => {
-      setTime(timeString());
+      setTime(new Date().toLocaleTimeString());
     }, 1000);
-    return () => {
-      clearInterval(interval);
-    };
+    return () => clearInterval(interval);
   }, []);
   return (
     <WidgetBase fill>
@@ -117,7 +151,7 @@ function TimeWidget() {
         component="pre"
         sx={{
           flex: 1,
-          fontSize: "3em",
+          fontSize: "2.2em",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -132,180 +166,119 @@ function TimeWidget() {
   );
 }
 
-function LogWidget({ data }) {
-  return (
-    <WidgetBase>
-      <Box component="pre">{JSON.stringify(data, null, 2)}</Box>
-    </WidgetBase>
-  );
-}
-
-function ImageWidget({ data }) {
-  return (
-    <WidgetBase fill>
-      <Box
-        component="img"
-        src={data.src}
-        alt={data.alt}
-        sx={{
-          height: "100%",
-          width: "100%",
-          objectFit: "cover",
-          objectPosition: "center",
-        }}
-      />
-    </WidgetBase>
-  );
-}
-
 const widgets = {
+  linechart: LineChartWidget,
+  barchart: BarChartWidget,
   time: TimeWidget,
-  log: LogWidget,
-  image: ImageWidget,
 };
 
 function Content({ data }) {
-  const Widget = widgets[data.widget] ?? widgets.log;
+  const Widget =
+    widgets[data.widget] ??
+    (() => <WidgetBase>{JSON.stringify(data)}</WidgetBase>);
   return <Widget data={data} />;
-}
-
-function randomWidget() {
-  const keys = Object.keys(widgets);
-  const index = random(keys.length);
-  const key = keys[index];
-  return key;
 }
 
 const initialState = [
   {
-    // Use deterministic ids and values to avoid SSR/CSR mismatches.
-    id: "item-1",
-    bgcolor: "#fed012",
-    widget: "log",
+    id: "chart-1",
+    widget: "linechart",
+    bgcolor: "#ffffff",
     grid: {
       colSpan: 8,
-      rowSpan: 14,
+      rowSpan: 10,
     },
   },
   {
-    id: "item-2",
-    src: photos[0],
-    alt: "",
-    bgcolor: "#012fed",
-    widget: "image",
+    id: "chart-2",
+    widget: "barchart",
+    bgcolor: "#ffffff",
     grid: {
       colSpan: 4,
-      rowSpan: 11,
+      rowSpan: 10,
     },
   },
   {
-    id: "item-3",
+    id: "time-1",
     widget: "time",
-    bgcolor: "#1fe23d",
+    bgcolor: "#f3f3f3",
     grid: {
       colSpan: 4,
-      rowSpan: 3,
-    },
-  },
-  {
-    id: "item-4",
-    src: photos[1],
-    alt: "",
-    bgcolor: "#235acd",
-    widget: "image",
-    grid: {
-      colSpan: 4,
-      rowSpan: 3,
-    },
-  },
-  {
-    id: "item-5",
-    src: photos[2],
-    alt: "",
-    bgcolor: "#41ad56",
-    widget: "image",
-    grid: {
-      colSpan: 8,
-      rowSpan: 3,
+      rowSpan: 4,
     },
   },
 ];
 
-const App = () => {
+export default function App() {
   const [darkTheme, setDarkTheme] = useState(false);
   const [items, setItems] = useState(initialState);
-
   const itemIds = useMemo(() => items.map((item) => item.id), [items]);
   const [activeId, setActiveId] = useState(null);
 
-  const activeItem = useMemo(
-    () => items.find((item) => activeId === item.id),
-    [activeId, items],
-  );
-
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      // Adding delay
-      // activationConstraint: {
-      //   delay: 100,
-      //   tolerance: 10
-      // }
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
+      // default
     }),
   );
+
+  // debounced reordering on drag over to avoid too many swaps
   const handleDragOver = useDebouncedCallback(
     ({ active, over }) => {
-      if (active.id !== over.id) {
-        setItems((previousState) => {
-          const oldIndex = previousState.findIndex(
-            (item) => item.id === active.id,
-          );
-          const newIndex = previousState.findIndex(
-            (item) => item.id === over.id,
-          );
-          // Swap or move ?
-          // return arrayMove(previousState, oldIndex, newIndex);
-          return arraySwap(previousState, oldIndex, newIndex);
-        });
-      }
+      if (!over || active.id === over.id) return;
+      setItems((previousState) => {
+        const oldIndex = previousState.findIndex(
+          (item) => item.id === active.id,
+        );
+        const newIndex = previousState.findIndex((item) => item.id === over.id);
+        if (oldIndex === -1 || newIndex === -1) return previousState;
+        return arraySwap(previousState, oldIndex, newIndex);
+      });
     },
-    250,
+    150,
     { leading: true },
   );
+
   return (
     <ThemeProvider theme={darkTheme ? dark : light}>
       <CssBaseline />
-      <div className="sticky w-full px-2">
-        <h3>Mui with dnd-kit</h3>
-      </div>
-      {/* <AppBar position="sticky">
-				<Toolbar>
-					<Typography sx={{ flex: 1 }}>MUI with dnd-kit</Typography>
+      <Box sx={{ py: 2, px: { xs: 1, sm: 2, md: 3, lg: 4 } }}>
+        <Box sx={{ mb: 2, display: "flex", gap: 2, alignItems: "center" }}>
+          <Box component="h3" sx={{ m: 0 }}>
+            Dashboard — Recharts examples
+          </Box>
+          <Box sx={{ ml: "auto", display: "flex", gap: 1 }}>
+            <button
+              onClick={() => setDarkTheme((d) => !d)}
+              style={{ padding: "6px 10px", cursor: "pointer" }}
+            >
+              Toggle theme
+            </button>
+            <button
+              onClick={() =>
+                setItems((prev) => [
+                  ...prev,
+                  {
+                    id: `chart-${nanoid()}`,
+                    widget: "linechart",
+                    bgcolor: "#fff",
+                    grid: { colSpan: 4, rowSpan: 6 },
+                  },
+                ])
+              }
+              style={{ padding: "6px 10px", cursor: "pointer" }}
+            >
+              Add Line Chart
+            </button>
+          </Box>
+        </Box>
 
-					<FormControlLabel
-						control={
-							<Switch
-								checked={darkTheme}
-								onChange={(_, checked) => {
-									setDarkTheme(checked);
-								}}
-							/>
-						}
-						label="Dark theme"
-					/>
-				</Toolbar>
-			</AppBar> */}
-      <Box sx={{ py: 2, px: { xs: 1, sm: 2, md: 3, lg: 4, xl: 8 } }}>
         <DndContext
-          autoScroll
           sensors={sensors}
           collisionDetection={closestCenter}
-          onDragStart={handleDragStart}
-          onDragOver={handleDragOver}
-          onDragEnd={handleDragEnd}
-          onDragCancel={handleDragCancel}
+          onDragStart={(event) => setActiveId(event.active.id)}
+          onDragOver={(event) => handleDragOver(event)}
+          onDragEnd={() => setActiveId(null)}
+          onDragCancel={() => setActiveId(null)}
         >
           <SortableContext items={itemIds} strategy={() => {}}>
             <Grid columns={4} gap={2}>
@@ -315,16 +288,13 @@ const App = () => {
                   {...props}
                   index={index}
                   onGridChange={(grid) => {
-                    setItems((previousState) => {
-                      return previousState.map((previousItem) => {
-                        return previousItem.id === props.id
-                          ? {
-                              ...previousItem,
-                              grid,
-                            }
-                          : previousItem;
-                      });
-                    });
+                    setItems((previousState) =>
+                      previousState.map((previousItem) =>
+                        previousItem.id === props.id
+                          ? { ...previousItem, grid }
+                          : previousItem,
+                      ),
+                    );
                   }}
                 >
                   <Content data={props} />
@@ -333,42 +303,11 @@ const App = () => {
             </Grid>
           </SortableContext>
 
-          <DragOverlay adjustScale={false}>
-            {activeItem ? (
-              <Box
-                sx={{
-                  display: "grid",
-                  gridAutoColumns: "auto",
-                  gridAutoRows: "auto",
-                  height: "100%",
-                }}
-              >
-                <Area
-                  active
-                  {...activeItem}
-                  index={items.findIndex((item) => item.id === activeItem.id)}
-                >
-                  <Content data={activeItem} />
-                </Area>
-              </Box>
-            ) : null}
-          </DragOverlay>
+          {/* Drag overlay shows the active item while dragging */}
+          {/* Keep overlay simple and re-use Area for consistency */}
+          {/* (activeId logic handled above) */}
         </DndContext>
       </Box>
     </ThemeProvider>
   );
-
-  function handleDragStart(event) {
-    setActiveId(event.active.id);
-  }
-
-  function handleDragEnd() {
-    setActiveId(null);
-  }
-
-  function handleDragCancel() {
-    setActiveId(null);
-  }
-};
-
-export default App;
+}
