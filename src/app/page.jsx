@@ -30,6 +30,7 @@ import {
   Bar,
   Legend,
 } from "recharts";
+import BPJSIndonesiaMap from "../components/map";
 
 const dark = createTheme({
   palette: {
@@ -169,6 +170,8 @@ function TimeWidget() {
 const widgets = {
   linechart: LineChartWidget,
   barchart: BarChartWidget,
+  // map widget - wrap the imported map component so it can receive the `data` prop if needed
+  map: (props) => <BPJSIndonesiaMap {...props} />,
   time: TimeWidget,
 };
 
@@ -197,6 +200,18 @@ const initialState = [
       colSpan: 4,
       rowSpan: 10,
     },
+  },
+  {
+    id: "map-1",
+    widget: "map",
+    bgcolor: "#ffffff",
+    grid: {
+      // make the map a larger item by default
+      colSpan: 8,
+      rowSpan: 12,
+    },
+    // optional: you can provide data through this field if BPJSIndonesiaMap is adapted to accept it
+    data: {},
   },
   {
     id: "time-1",
