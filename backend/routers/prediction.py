@@ -1,58 +1,38 @@
 import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+# --- REAL IMPORTS ---
+from faskes.predict import predict_xgboost_multistep
+from supabase_storage import SupabaseModelStorage
 
 # --- LOGGING SETUP ---
 logger = logging.getLogger("PredictionService")
 logger.setLevel(logging.INFO)
 
-# --- OPTIONAL IMPORTS (Graceful Degradation) ---
-# We try to import the real ML modules. If missing, we set flags to use mock logic.
-try:
-
-    HAS_FASKES_MODULE = True
-except ImportError:
-    logger.warning("Module 'faskes.predict' not found. Using MOCK prediction logic.")
-    HAS_FASKES_MODULE = False
-
-try:
-    from supabase_storage import SupabaseModelStorage
-
-    HAS_SUPABASE = True
-except ImportError:
-    logger.warning("Module 'supabase_storage' not found. Using local/mock storage.")
-    HAS_SUPABASE = False
-
-
 # --- CONFIGURATION ---
 router = APIRouter(tags=["Predictions"])
-TEMP_DIR = Path(tempfile.gettempdir()) / "faskes_models"
+TEMP_DIR = Path(tempfile.gettempdir()) / "agentic_bi_models"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-# In-memory cache for loaded models to prevent re-downloading/re-loading
-# Key: str (model_name), Value: Any (The model object)
-MODEL_CACHE: Dict[str, Any] = {}
 
 
 # --- DATA MODELS ---
-
-
 class PredictionRequest(BaseModel):
     dataset: str = Field(
-        ..., description="Dataset: 'fkrtl', 'klinik_pratama', 'praktek_dokter'"
+        ..., description="Dataset key (e.g. 'fkrtl', 'penyakit/kasus_per_service')"
     )
     start_year: int = Field(..., ge=2019, le=2030)
     n_years: int = Field(default=1, ge=1, le=10)
     provinces: Optional[List[str]] = None
-    use_cache: bool = True
+    refresh: bool = False
 
 
 class PredictionResult(BaseModel):
@@ -62,68 +42,98 @@ class PredictionResult(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-# --- SERVICE LAYER ---
-# This class handles the logic, separate from the HTTP API, making it callable from main.py
+# --- DYNAMIC REGISTRY ---
+class ModelRegistry:
+    """
+    Manages loading of models from Supabase Storage.
+    Uses a PREDEFINED list of files to avoid folder scanning issues.
+    """
 
+    _models: Dict[str, Any] = {}
+    _is_initialized: bool = False
 
-class PredictionService:
-    @staticmethod
-    def _get_mock_prediction(
-        start_year: int, n_years: int, provinces: Optional[List[str]]
-    ) -> pd.DataFrame:
-        """Generates realistic dummy data for UI testing when ML backend is missing."""
-        years = range(start_year, start_year + n_years + 1)
-        data = []
-
-        # Default provinces if none provided
-        prov_list = (
-            provinces
-            if provinces
-            else ["DKI JAKARTA", "JAWA BARAT", "JAWA TIMUR", "BALI"]
-        )
-
-        for prov in prov_list:
-            base_val = np.random.randint(50, 200)
-            growth_rate = 1.05  # 5% growth
-            for i, year in enumerate(years):
-                val = int(base_val * (growth_rate**i)) + np.random.randint(-5, 5)
-                data.append({"province": prov, "year": year, "prediction": val})
-        return pd.DataFrame(data)
+    # HARDCODED LIST based on user provision
+    PREDEFINED_MODELS = [
+        # Faskes
+        "faskes/model_fkrtl.pkl",
+        "faskes/model_klinik_pratama.pkl",
+        "faskes/model_praktek_dokter.pkl",
+        # Penyakit
+        "penyakit/models_kasus_per_service.pkl",
+        "penyakit/models_peserta_per_service.pkl",
+        # Peserta
+        "peserta/model_geo.pkl",
+        "peserta/model_kelas.pkl",
+        "peserta/model_segmen.pkl",
+    ]
 
     @classmethod
-    def _load_model(cls, model_name: str, bucket_prefix: str, use_cache: bool) -> Any:
-        cache_key = f"{bucket_prefix}/{model_name}"
+    async def ensure_initialized(cls, force_refresh: bool = False):
+        if cls._is_initialized and not force_refresh:
+            return
 
-        if use_cache and cache_key in MODEL_CACHE:
-            return MODEL_CACHE[cache_key]
+        logger.info("Initializing Model Registry (Direct Access Mode)...")
+        storage = SupabaseModelStorage()
+        bucket = "bucket"
 
-        if not HAS_SUPABASE:
-            # Return a dummy model object that functions expect
-            return {
-                "entity_col": "province",
-                "time_col": "year",
-                "target_col": "prediction",
-                "is_mock": True,
-            }
+        cls._models.clear()
 
-        logger.info(f"Downloading model: {bucket_prefix}/{model_name}")
-        try:
-            storage = SupabaseModelStorage()
-            local_path = TEMP_DIR / bucket_prefix / model_name
-            local_path.parent.mkdir(parents=True, exist_ok=True)
+        for file_path in cls.PREDEFINED_MODELS:
+            try:
+                filename = os.path.basename(file_path)
+                folder = os.path.dirname(file_path)
 
-            # Download logic
-            model = storage.download_model(
-                f"{bucket_prefix}/{model_name}",
-                use_latest=True,
-                local_path=str(local_path),
-            )
-            MODEL_CACHE[cache_key] = model
-            return model
-        except Exception as e:
-            logger.error(f"Failed to load model from Supabase: {e}")
-            raise HTTPException(status_code=500, detail=f"Model load failed: {str(e)}")
+                # Download
+                local_path = TEMP_DIR / folder / filename
 
+                try:
+                    model_package = storage.download_model(
+                        path=file_path, bucket_name=bucket, local_path=str(local_path)
+                    )
+                except Exception as dl_err:
+                    logger.warning(f"Could not download {file_path}: {dl_err}")
+                    continue
+
+                # Registration Logic
+                clean_name = cls._infer_dataset_name(filename)
+
+                # 1. Full Key: "penyakit/kasus_per_service"
+                full_key = f"{folder}/{clean_name}"
+                cls._models[full_key] = model_package
+
+                # 2. Short Key: "kasus_per_service" (if unique)
+                if clean_name not in cls._models:
+                    cls._models[clean_name] = model_package
+
+                logger.info(f"✅ Registered: {full_key}")
+
+            except Exception as e:
+                logger.error(f"Error registering {file_path}: {e}")
+
+        cls._is_initialized = True
+        logger.info(f"Registry Ready. Loaded {len(cls._models)} models.")
+
+    @staticmethod
+    def _infer_dataset_name(filename: str) -> str:
+        """
+        Cleans filename to create a readable ID.
+        Ex: 'model_fkrtl.pkl' -> 'fkrtl'
+        """
+        name = filename.replace(".pkl", "")
+        name = re.sub(r"^models?_", "", name)
+        return name
+
+    @classmethod
+    def get_model(cls, dataset_name: str) -> Optional[Any]:
+        return cls._models.get(dataset_name)
+
+    @classmethod
+    def list_available_datasets(cls) -> List[str]:
+        return list(cls._models.keys())
+
+
+# --- SERVICE LAYER ---
+class PredictionService:
     @classmethod
     async def predict_faskes(
         cls,
@@ -131,83 +141,78 @@ class PredictionService:
         start_year: int,
         n_years: int,
         provinces: Optional[List[str]] = None,
+        refresh: bool = False,
     ) -> PredictionResult:
-        """
-        Core logic to predict facility numbers.
-        Returns a Pydantic model for easy consumption by both API and Agent.
-        """
-        valid_datasets = ["fkrtl", "klinik_pratama", "praktek_dokter"]
-        if dataset not in valid_datasets:
-            # Fuzzy match or default to fkrtl if invalid
-            dataset = "fkrtl"
+        await ModelRegistry.ensure_initialized(force_refresh=refresh)
+
+        model_package = ModelRegistry.get_model(dataset)
+
+        # FIX: Use explicit None check to avoid ValueError with numpy arrays
+        if model_package is None:
+            available = ModelRegistry.list_available_datasets()
+            raise RuntimeError(f"Dataset '{dataset}' not found. Available: {available}")
+
+        # FIX: Handle case where model_package is raw model (not dict)
+        if not isinstance(model_package, dict):
+            model_package = {
+                "model": model_package,
+                "entity_col": "province",
+                "time_col": "year",
+                "target_col": "prediction",
+            }
 
         try:
-            # 1. Load Model
-            model_package = cls._load_model(
-                f"model_{dataset}.pkl", "faskes", use_cache=True
-            )
+            # Run Prediction
+            df_pred = predict_xgboost_multistep(model_package, start_year, n_years)
 
-            # 2. Run Prediction (Real or Mock)
-            if HAS_FASKES_MODULE and not model_package.get("is_mock"):
-                df_pred = predict_xgboost_multistep(model_package, start_year, n_years)
-            else:
-                logger.info("Running Mock Prediction Logic")
-                df_pred = cls._get_mock_prediction(start_year, n_years, provinces)
-                # Ensure columns match what the real model would output
-                model_package = {
-                    "entity_col": "province",
-                    "time_col": "year",
-                    "target_col": "prediction",
-                }
+            # Filter by Province
+            entity_col = model_package.get("entity_col", "province")
 
-            # 3. Filter by Province
-            if provinces:
-                # Case-insensitive filter
+            if provinces and entity_col in df_pred.columns:
                 mask = (
-                    df_pred[model_package["entity_col"]]
+                    df_pred[entity_col]
                     .astype(str)
                     .str.upper()
                     .isin([p.upper() for p in provinces])
                 )
                 df_pred = df_pred[mask]
 
-            # 4. Format Output
-            # Group by year to get totals for the chart if no specific province selected
-            # Or return full granular data
+            # Format Output
+            target_col = model_package.get("target_col", "prediction")
+            time_col = model_package.get("time_col", "year")
 
-            predictions = df_pred[
-                [
-                    model_package["entity_col"],
-                    model_package["time_col"],
-                    model_package["target_col"],
-                ]
-            ].to_dict("records")
+            if target_col not in df_pred.columns:
+                target_col = df_pred.columns[-1]
 
-            total_facilities = int(df_pred[model_package["target_col"]].sum())
+            predictions = df_pred.to_dict("records")
+            total_facilities = (
+                int(df_pred[target_col].sum()) if not df_pred.empty else 0
+            )
 
             return PredictionResult(
                 success=True,
                 predictions=predictions,
                 total_facilities=total_facilities,
-                metadata={"dataset": dataset, "years": n_years},
+                metadata={
+                    "dataset": dataset,
+                    "years": n_years,
+                    "source": "Supabase (Direct Access)",
+                },
             )
 
         except Exception as e:
-            logger.exception("Prediction failed inside Service")
-            raise RuntimeError(f"Prediction Service Error: {str(e)}")
+            logger.exception("Prediction Logic Failed")
+            raise RuntimeError(f"Prediction Error: {str(e)}")
 
 
-# --- HTTP ENDPOINTS (Controller Layer) ---
-
-
+# --- HTTP ENDPOINTS ---
 @router.get("/health/predictions")
 async def prediction_health_check():
+    await ModelRegistry.ensure_initialized()
     return {
         "status": "healthy",
-        "modules": {
-            "faskes_ml": "loaded" if HAS_FASKES_MODULE else "missing (using mock)",
-            "supabase": "loaded" if HAS_SUPABASE else "missing (using mock)",
-        },
+        "available_models": ModelRegistry.list_available_datasets(),
+        "bucket_used": "bucket",
     }
 
 
@@ -219,17 +224,14 @@ async def predict_faskes_endpoint(request: PredictionRequest):
             start_year=request.start_year,
             n_years=request.n_years,
             provinces=request.provinces,
+            refresh=request.refresh,
         )
         return result
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
 
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/cache")
 async def clear_cache():
-    MODEL_CACHE.clear()
-    if TEMP_DIR.exists():
-        shutil.rmtree(TEMP_DIR)
-        TEMP_DIR.mkdir()
-    return {"success": True, "message": "Cache cleared"}
+    await ModelRegistry.ensure_initialized(force_refresh=True)
+    return {"success": True, "message": "Registry refreshed."}
