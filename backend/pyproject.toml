@@ -10,5 +10,4 @@ dependencies = [
     "pydantic-ai>=1.21.0",
     "python-dotenv>=1.2.1",
     "streamlit>=1.51.0",
-    "vanna[chromadb,openai]>=2.0.0",
 ]

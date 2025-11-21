@@ -1,14 +1,17 @@
 import json
+import os  # <--- Add this import
 
 import pandas as pd
 import requests
 import streamlit as st
 
-API_URL = "http://127.0.0.1:8000/generate-chart-stream"
+# Use environment variable if available, otherwise fallback to localhost (for local non-docker runs)
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/generate-chart-stream")
 
 st.set_page_config(page_title="Thin Client BI", layout="wide")
 st.title("⚡ Thin-Client Agentic BI")
 
+# ... rest of the file remains the same ...
 query = st.text_area("Ask a question:", "Show top 5 selling products")
 run_btn = st.button("🚀 Run", type="primary")
 
