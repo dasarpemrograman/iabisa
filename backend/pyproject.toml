@@ -1,0 +1,14 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.121.3",
+    "pandas>=2.3.3",
+    "pydantic-ai>=1.21.0",
+    "python-dotenv>=1.2.1",
+    "streamlit>=1.51.0",
+    "vanna[chromadb,openai]>=2.0.0",
+]
