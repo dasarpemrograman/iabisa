@@ -156,9 +156,8 @@ export default function ChatbotPanel({
     if (type === "status") {
       setCurrentStatus(state === "running" ? label : "");
     } else if (type === "log") {
-      // Optional: You could show these in a debug drawer
+      // Optional logging
     } else if (type === "artifact") {
-      // Append artifacts (SQL, etc) to the current message
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id === msgId) {
@@ -183,8 +182,10 @@ export default function ChatbotPanel({
               return {
                 ...m,
                 type: view,
-                content: content.component_name || "Visualization", // Fallback text
-                data: content.data,
+                content: content.component_name || "Visualization",
+                // FIX STARTS HERE: Pass full content for maps, just rows for charts
+                data: view === "map" ? content : content.data,
+                // FIX ENDS HERE
                 componentName: content.component_name,
               };
             }
@@ -200,11 +201,12 @@ export default function ChatbotPanel({
   // --- Helper: Add to Dashboard ---
   const handleAddToDashboard = (msg: Message) => {
     addItem({
-      widget: "dynamic-chart", // This maps to the GenericWidget in Dashboard
+      widget: "dynamic-chart",
       bgcolor: "#ffffff",
       grid: { colSpan: 4, rowSpan: 8 },
       data: msg.data,
       title: msg.componentName || "New Insight",
+      type: msg.type, // <--- Ensure this is present
     });
   };
 

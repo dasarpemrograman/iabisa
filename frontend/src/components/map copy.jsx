@@ -201,10 +201,8 @@ export default function BPJSIndonesiaMap({ data }) {
       style={{
         width: "100%",
         height: "100%",
-        position: "absolute", // Snaps to the relative parent in DynamicWidget
-        top: 0,
-        left: 0,
-        overflow: "hidden",
+        minHeight: "300px", // Prevents collapse on very small screens
+        position: "relative",
       }}
     />
   );
