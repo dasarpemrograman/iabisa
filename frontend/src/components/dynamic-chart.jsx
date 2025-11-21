@@ -1,146 +1,186 @@
 "use client";
 
+import React, { useMemo } from "react";
 import {
   LineChart,
   Line,
   BarChart,
   Bar,
-  CartesianGrid,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
+  CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
   Legend,
+  ResponsiveContainer,
 } from "recharts";
-import BPJSIndonesiaMap from "./map";
-import { Box, Typography } from "@mui/material";
 
-export default function DynamicWidget({ data, type, title }) {
-  // --- DETECTION LOGIC ---
-  const isExplicitMap = type === "map" || title?.toLowerCase().includes("map");
-  const isMapData = data && !Array.isArray(data) && "province_key" in data;
-  const isMap = isExplicitMap || isMapData;
+export default function DynamicWidget({ data }) {
+  const chartConfig = useMemo(() => {
+    if (!data || !data.react_code) return null;
 
-  // --- SHARED FLEX CONTAINER STYLE ---
-  // This ensures the widget fits exactly inside the dashboard tile
-  const containerStyle = {
-    width: "100%",
-    height: "100%",
-    display: "flex",
-    flexDirection: "column",
-    p: 1,
-    overflow: "hidden", // Prevents spillover
+    try {
+      let code = data.react_code;
+
+      // 1. Handle if it's already an object
+      if (typeof code === "object" && code !== null) return code;
+
+      // 2. Clean string input (Remove Markdown code blocks)
+      if (typeof code === "string") {
+        code = code.trim();
+        // Remove ```json and ``` wrappers if present
+        if (code.startsWith("```")) {
+          code = code.replace(/^```(json)?/i, "").replace(/```$/, "");
+        }
+        return JSON.parse(code);
+      }
+
+      return null;
+    } catch (e) {
+      console.error("Failed to parse chart config:", e);
+      return null;
+    }
+  }, [data]);
+
+  if (!chartConfig || !data.data) {
+    return (
+      <div className="flex h-full animate-pulse items-center justify-center text-sm text-gray-400">
+        Waiting for visualization config...
+      </div>
+    );
+  }
+
+  const { data: chartData } = data;
+  const { type, xAxisKey, series = [], colors = [] } = chartConfig;
+  const defaultColors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
+
+  // Styles for Light Mode
+  const tooltipStyle = {
+    backgroundColor: "#ffffff",
+    border: "1px solid #e5e7eb",
+    borderRadius: "8px",
+    boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
+    color: "#374151",
   };
 
-  if (isMap) {
-    return (
-      <Box sx={containerStyle}>
-        {title && (
-          <Typography variant="subtitle2" mb={1} sx={{ flexShrink: 0 }}>
-            {title}
-          </Typography>
-        )}
-        {/* Map takes all remaining height */}
-        <Box sx={{ flexGrow: 1, minHeight: 0, position: "relative" }}>
-          <BPJSIndonesiaMap data={data} />
-        </Box>
-      </Box>
-    );
-  }
+  const renderChart = () => {
+    const commonProps = {
+      data: chartData,
+      margin: { top: 10, right: 30, left: 0, bottom: 0 },
+    };
 
-  // --- CHART LOGIC ---
-  if (!data || !Array.isArray(data)) {
-    return (
-      <Box
-        sx={{
-          ...containerStyle,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Typography variant="body2" color="text.secondary">
-          No chart data available
-        </Typography>
-      </Box>
-    );
-  }
+    const AxisProps = {
+      stroke: "#9ca3af",
+      style: { fontSize: 12, fontFamily: "sans-serif" },
+    };
 
-  const keys = data.length > 0 ? Object.keys(data[0]) : [];
-  const xAxisKey =
-    keys.find((k) =>
-      ["date", "time", "name", "province"].some((term) =>
-        k.toLowerCase().includes(term),
-      ),
-    ) || keys[0];
-  const dataKey =
-    keys.find((k) => k !== xAxisKey && typeof data[0][k] === "number") ||
-    keys[1];
-  const isBar =
-    type === "barchart" ||
-    title?.toLowerCase().includes("bar") ||
-    keys.length < 3;
+    // Normalize type to lowercase to handle "LineChart" vs "linechart"
+    const chartType = type?.toLowerCase() || "linechart";
+
+    switch (chartType) {
+      case "linechart":
+      case "line":
+        return (
+          <LineChart {...commonProps}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey={xAxisKey} {...AxisProps} />
+            <YAxis {...AxisProps} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Legend wrapperStyle={{ paddingTop: "10px" }} />
+            {series.map((s, i) => (
+              <Line
+                key={s.dataKey}
+                type="monotone"
+                dataKey={s.dataKey}
+                name={s.label || s.dataKey}
+                stroke={
+                  s.color ||
+                  colors[i] ||
+                  defaultColors[i % defaultColors.length]
+                }
+                strokeWidth={2}
+                dot={{ r: 3, strokeWidth: 2 }}
+                activeDot={{ r: 6 }}
+              />
+            ))}
+          </LineChart>
+        );
+
+      case "barchart":
+      case "bar":
+        return (
+          <BarChart {...commonProps}>
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="#e5e7eb"
+              vertical={false}
+            />
+            <XAxis dataKey={xAxisKey} {...AxisProps} />
+            <YAxis {...AxisProps} />
+            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "#f3f4f6" }} />
+            <Legend />
+            {series.map((s, i) => (
+              <Bar
+                key={s.dataKey}
+                dataKey={s.dataKey}
+                name={s.label || s.dataKey}
+                fill={
+                  s.color ||
+                  colors[i] ||
+                  defaultColors[i % defaultColors.length]
+                }
+                radius={[4, 4, 0, 0]}
+              />
+            ))}
+          </BarChart>
+        );
+
+      case "areachart":
+      case "area":
+        return (
+          <AreaChart {...commonProps}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey={xAxisKey} {...AxisProps} />
+            <YAxis {...AxisProps} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Legend />
+            {series.map((s, i) => (
+              <Area
+                key={s.dataKey}
+                type="monotone"
+                dataKey={s.dataKey}
+                name={s.label || s.dataKey}
+                stroke={
+                  s.color ||
+                  colors[i] ||
+                  defaultColors[i % defaultColors.length]
+                }
+                fill={
+                  s.color ||
+                  colors[i] ||
+                  defaultColors[i % defaultColors.length]
+                }
+                fillOpacity={0.3}
+              />
+            ))}
+          </AreaChart>
+        );
+
+      default:
+        return (
+          <div className="flex h-full items-center justify-center text-sm text-red-400">
+            Unsupported chart type: {type}
+          </div>
+        );
+    }
+  };
 
   return (
-    <Box sx={containerStyle}>
-      {title && (
-        <Typography variant="subtitle2" mb={1} sx={{ flexShrink: 0 }}>
-          {title}
-        </Typography>
-      )}
-      <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {isBar ? (
-            <BarChart
-              data={data}
-              margin={{ top: 5, right: 5, left: -20, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis
-                dataKey={xAxisKey}
-                style={{ fontSize: 10 }}
-                tick={{ fill: "#666" }}
-              />
-              <YAxis style={{ fontSize: 10 }} tick={{ fill: "#666" }} />
-              <Tooltip
-                contentStyle={{
-                  borderRadius: 8,
-                  border: "none",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                }}
-              />
-              <Legend wrapperStyle={{ fontSize: "10px" }} />
-              <Bar dataKey={dataKey} fill="#2A4491" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          ) : (
-            <LineChart
-              data={data}
-              margin={{ top: 5, right: 5, left: -20, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis
-                dataKey={xAxisKey}
-                style={{ fontSize: 10 }}
-                tick={{ fill: "#666" }}
-              />
-              <YAxis style={{ fontSize: 10 }} tick={{ fill: "#666" }} />
-              <Tooltip
-                contentStyle={{
-                  borderRadius: 8,
-                  border: "none",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey={dataKey}
-                stroke="#44853B"
-                strokeWidth={2}
-                dot={{ r: 3 }}
-              />
-            </LineChart>
-          )}
-        </ResponsiveContainer>
-      </Box>
-    </Box>
+    <div className="h-full min-h-[200px] w-full font-sans">
+      <ResponsiveContainer width="100%" height="100%">
+        {renderChart()}
+      </ResponsiveContainer>
+    </div>
   );
 }

@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 
+from routers.prediction import PredictionService
+
 # --- CONFIGURATION ---
 logging.basicConfig(
     level=logging.INFO,
@@ -260,7 +262,16 @@ summarizer_agent = Agent(
 chart_agent = Agent(
     llm_model,
     output_type=RechartsCodeResponse,
-    system_prompt="Generate Recharts config (JSON). Embed data in `const data = [...]`. Return valid JSON.",
+    system_prompt=(
+        "You are a Data Visualization Expert. "
+        "Generate a JSON configuration for Recharts based on the data schema. "
+        "The JSON must strictly follow this structure: "
+        '{ "type": "linechart" | "barchart" | "areachart", '
+        '  "xAxisKey": "string (column name for X axis)", '
+        '  "series": [{ "dataKey": "string (column name for Y axis)", "label": "string", "color": "hex string" }] '
+        "}. "
+        "Do NOT include the actual data values. Do NOT write 'const data ='. Return ONLY valid JSON."
+    ),
 )
 
 map_agent = Agent(
@@ -327,17 +338,65 @@ async def step_general_chat(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     yield create_event("final", content=result.output, view="text", state="complete")
 
 
-# --- STEP 3: PREDICTION ---
+# --- STEP 3: PREDICTION (Full Implementation) ---
 async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    # (Simplified placeholder for brevity, integrates with prediction.py logic)
     yield create_event("status", "🔮 Configuring Prediction...", "running")
-    params = await prediction_param_agent.run(ctx.request.message)
-    yield create_event(
-        "final",
-        content=f"Prediction initiated for {params.output.dataset}",
-        view="text",
-        state="complete",
-    )
+
+    # 1. Extract Parameters using the Agent
+    params_result = await prediction_param_agent.run(ctx.request.message)
+    params = params_result.output
+
+    # Defaults if agent misses them
+    start_year = params.year if params.year else datetime.now().year
+    dataset = params.dataset if params.dataset else "fkrtl"
+
+    yield create_event("status", f"🧠 Running Model ({dataset})...", "running")
+
+    try:
+        # 2. Call the Service directly (No HTTP overhead)
+        # We forecast 3 years ahead by default for better charts
+        pred_result = await PredictionService.predict_faskes(
+            dataset=dataset,
+            start_year=start_year,
+            n_years=3,
+            provinces=params.provinces,
+        )
+
+        ctx.data = pred_result.predictions
+
+        if not ctx.data:
+            yield create_event(
+                "final", "No prediction data generated.", view="text", state="complete"
+            )
+            return
+
+        # 3. Generate Visualization using the Chart Agent
+        yield create_event("status", "🎨 Visualizing Forecast...", "running")
+
+        # We give the chart agent a sample so it knows schema (year, prediction, province)
+        chart_prompt = (
+            f"User asked: {ctx.request.message}\n"
+            f"Dataset: {dataset}\n"
+            f"Data Sample (showing columns): {ctx.data[:5]}\n"
+            "Create a LineChart or BarChart. If multiple provinces, use different colors or lines."
+        )
+
+        chart_res = await chart_agent.run(chart_prompt)
+
+        payload = {
+            "component_name": chart_res.output.component_name,
+            "react_code": chart_res.output.code,
+            "data": ctx.data,
+            "title": f"Prediction: {dataset.replace('_', ' ').title()} ({start_year}-{start_year + 3})",
+        }
+
+        # 4. Yield the Chart View
+        yield create_event("final", content=payload, view="chart", state="complete")
+
+    except Exception as e:
+        logger.exception("Prediction step failed")
+        ctx.error = str(e)
+        yield create_event("status", "❌ Prediction Error", "error", content=str(e))
 
 
 # --- STEP 4: SQL GENERATION ---

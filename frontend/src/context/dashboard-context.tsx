@@ -8,8 +8,9 @@ import { nanoid } from "nanoid";
 // Define the shape of a dashboard item
 export interface DashboardItem {
   id: string;
-  widget: "linechart" | "barchart" | "map" | "time" | "dynamic-chart";
-  bgcolor: string;
+  widget: string; // "linechart" | "barchart" | "map" | "time" | "dynamic-chart"
+  bgcolor?: string;
+  // We restore the 'grid' object to match what Area.jsx expects
   grid: {
     colSpan: number;
     rowSpan: number;
@@ -20,7 +21,8 @@ export interface DashboardItem {
 
 interface DashboardContextType {
   items: DashboardItem[];
-  addItem: (item: Omit<DashboardItem, "id">) => void;
+  // Updated signature to match what ChatbotPanel sends
+  addItem: (widgetType: string, title: string, data: any) => void;
   removeItem: (id: string) => void;
   updateGrid: (id: string, grid: { colSpan: number; rowSpan: number }) => void;
   reorderItems: (activeId: string, overId: string) => void;
@@ -37,27 +39,48 @@ const defaultItems: DashboardItem[] = [
     widget: "linechart",
     bgcolor: "#ffffff",
     grid: { colSpan: 8, rowSpan: 10 },
+    title: "Traffic Overview",
   },
   {
     id: "chart-2",
     widget: "barchart",
     bgcolor: "#ffffff",
     grid: { colSpan: 4, rowSpan: 10 },
+    title: "User Demographics",
   },
   {
     id: "time-1",
     widget: "time",
     bgcolor: "#f3f3f3",
     grid: { colSpan: 4, rowSpan: 4 },
+    title: "Clock",
   },
 ];
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<DashboardItem[]>(defaultItems);
 
-  const addItem = useCallback((newItem: Omit<DashboardItem, "id">) => {
-    setItems((prev) => [...prev, { ...newItem, id: `widget-${nanoid()}` }]);
-  }, []);
+  // Corrected addItem to accept arguments from ChatbotPanel and create a valid 'grid' object
+  const addItem = useCallback(
+    (widgetType: string, title: string, data: any) => {
+      setItems((prev) => {
+        const newItem: DashboardItem = {
+          id: `widget-${nanoid()}`,
+          widget: widgetType,
+          title: title,
+          data: data,
+          bgcolor: "#ffffff",
+          // Default grid size for new AI widgets
+          grid: {
+            colSpan: 6, // Half width (assuming 12 col grid)
+            rowSpan: 8, // Reasonable height
+          },
+        };
+        return [...prev, newItem];
+      });
+    },
+    [],
+  );
 
   const removeItem = useCallback((id: string) => {
     setItems((prev) => prev.filter((item) => item.id !== id));

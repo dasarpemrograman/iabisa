@@ -1,333 +1,310 @@
-// src/components/chatbot-panel.tsx
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
 import {
   Send,
-  Maximize2,
-  Minimize2,
+  Bot,
+  User,
+  Sparkles,
+  Loader2,
+  BarChart2,
+  AlertCircle,
   PlusCircle,
-  Activity,
-  Database,
-  Map as MapIcon,
 } from "lucide-react";
-import { useDashboard } from "@/context/dashboard-context"; // Import the hook
-import DynamicWidget from "./dynamic-chart"; // Import the renderer
+import { useDashboard } from "@/context/dashboard-context";
+import ReactMarkdown from "react-markdown";
+import DynamicWidget from "./dynamic-chart";
 
-// --- Types ---
 interface Message {
-  id: string;
   role: "user" | "assistant" | "system";
-  content: string;
-  type?: "text" | "chart" | "map" | "status" | "error";
-  data?: any; // For chart/map data
-  componentName?: string; // To identify chart type
-  artifacts?: { title: string; content: string; type: "sql" | "json" }[];
-  timestamp: Date;
+  content: string | any;
+  type?: "text" | "status" | "error" | "chart" | "map";
+  steps?: {
+    label: string;
+    status: "running" | "complete" | "error";
+    content?: string;
+  }[];
+  title?: string;
 }
 
-// --- Main Component ---
-export default function ChatbotPanel({
-  fullscreen = false,
-  onFullscreen,
-  onExitFullscreen,
-}: {
-  fullscreen?: boolean;
-  onFullscreen?: () => void;
-  onExitFullscreen?: () => void;
-}) {
-  const { addItem } = useDashboard(); // Connect to Dashboard
+export default function ChatbotPanel() {
+  const { addItem } = useDashboard();
+  const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     {
-      id: "welcome",
-      role: "assistant",
+      role: "system",
       content:
-        "Hello! I am your Agentic BI Assistant. Ask me about your data, or ask to generate charts and maps.",
+        "Hello! I am your BI Assistant. Ask me to predict facility growth or query the database.",
       type: "text",
-      timestamp: new Date(),
     },
   ]);
-  const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [currentStatus, setCurrentStatus] = useState<string>("");
-
+  const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentStatus]);
+  }, [messages]);
 
-  // --- Handler: Send Message ---
-  const handleSendMessage = async () => {
-    if (!input.trim() || isStreaming) return;
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
 
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: input,
-      type: "text",
-      timestamp: new Date(),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
+    const userMessage = input;
     setInput("");
-    setIsStreaming(true);
-    setCurrentStatus("🧠 Starting agent...");
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: userMessage, type: "text" },
+    ]);
+    setIsLoading(true);
 
-    // Prepare history for backend
-    const history = messages.map((m) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.content,
-    }));
+    const history = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role,
+        content:
+          typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+      }));
 
     try {
       const response = await fetch(
-        "http://localhost:8000/generate-chart-stream",
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/generate-chart-stream`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: userMsg.content, history }),
+          body: JSON.stringify({ message: userMessage, history }),
         },
       );
 
       if (!response.body) throw new Error("No response body");
 
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "", steps: [], type: "text" },
+      ]);
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
-      // Create a placeholder message for the assistant's response
-      const responseId = (Date.now() + 1).toString();
-      const assistantMsg: Message = {
-        id: responseId,
-        role: "assistant",
-        content: "",
-        type: "text",
-        timestamp: new Date(),
-        artifacts: [],
-      };
-
-      setMessages((prev) => [...prev, assistantMsg]);
-
-      // Stream Loop
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n"); // SSE messages are separated by double newline
-        buffer = lines.pop() ?? ""; // Keep partial line
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
-            const jsonStr = line.replace("data: ", "");
+            const jsonStr = line.replace("data: ", "").trim();
+            if (!jsonStr) continue;
+
             try {
               const event = JSON.parse(jsonStr);
-              handleStreamEvent(event, responseId);
+              processStreamEvent(event);
             } catch (e) {
-              console.error("Error parsing stream event", e);
+              console.error("Error parsing stream event:", e);
             }
           }
         }
       }
     } catch (error) {
-      console.error(error);
       setMessages((prev) => [
         ...prev,
-        {
-          id: Date.now().toString(),
-          role: "assistant",
-          content:
-            "❌ Connection failed. Please check if the backend is running.",
-          type: "error",
-          timestamp: new Date(),
-        },
+        { role: "system", content: `Error: ${error}`, type: "error" },
       ]);
     } finally {
-      setIsStreaming(false);
-      setCurrentStatus("");
+      setIsLoading(false);
     }
   };
 
-  // --- Handler: Process Stream Events ---
-  const handleStreamEvent = (event: any, msgId: string) => {
-    const { type, label, state, content, view } = event;
+  const processStreamEvent = (event: any) => {
+    setMessages((prev) => {
+      const newMsgs = [...prev];
+      const lastMsg = newMsgs[newMsgs.length - 1];
 
-    if (type === "status") {
-      setCurrentStatus(state === "running" ? label : "");
-    } else if (type === "log") {
-      // Optional logging
-    } else if (type === "artifact") {
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id === msgId) {
-            return {
-              ...m,
-              artifacts: [
-                ...(m.artifacts ?? []),
-                { title: label, content, type: view },
-              ],
-            };
-          }
-          return m;
-        }),
-      );
-    } else if (type === "final") {
-      // Finalize the message
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id === msgId) {
-            // If content is complex (chart/map), store data
-            if (view === "chart" || view === "map") {
-              return {
-                ...m,
-                type: view,
-                content: content.component_name || "Visualization",
-                // FIX STARTS HERE: Pass full content for maps, just rows for charts
-                data: view === "map" ? content : content.data,
-                // FIX ENDS HERE
-                componentName: content.component_name,
-              };
-            }
-            // Else it's text
-            return { ...m, content: content, type: "text" };
-          }
-          return m;
-        }),
-      );
-    }
-  };
+      // 1. Handle Intermediate Steps (Status updates)
+      if (["status", "log", "artifact"].includes(event.type)) {
+        const steps = lastMsg.steps || [];
+        const existingStepIndex = steps.findIndex(
+          (s) => s.label === event.label,
+        );
 
-  // --- Helper: Add to Dashboard ---
-  const handleAddToDashboard = (msg: Message) => {
-    addItem({
-      widget: "dynamic-chart",
-      bgcolor: "#ffffff",
-      grid: { colSpan: 4, rowSpan: 8 },
-      data: msg.data,
-      title: msg.componentName ?? "",
-      type: msg.type, // <--- Ensure this is present
+        const newStep = {
+          label: event.label,
+          status: event.state || "running",
+          content: event.content,
+        };
+
+        if (existingStepIndex >= 0) steps[existingStepIndex] = newStep;
+        else steps.push(newStep);
+
+        lastMsg.steps = steps;
+      }
+
+      // 2. Handle Final Response
+      if (event.type === "final") {
+        // Determine Type
+        const isChart = event.view === "chart" || event.view === "map";
+        lastMsg.type = isChart ? event.view : "text";
+        lastMsg.content = event.content;
+        lastMsg.title = isChart
+          ? event.content.title || "AI Insight"
+          : undefined;
+
+        // --- FIX: FORCE ALL STEPS TO COMPLETE ---
+        if (lastMsg.steps) {
+          lastMsg.steps = lastMsg.steps.map((step) => ({
+            ...step,
+            status: step.status === "running" ? "complete" : step.status,
+          }));
+        }
+      }
+      return newMsgs;
     });
   };
 
+  const handleManualAdd = (msg: Message) => {
+    const widgetType = msg.type === "map" ? "map" : "dynamic-chart";
+    addItem(widgetType, msg.title || "New Widget", msg.content);
+  };
+
   return (
-    <div className="flex h-full flex-col border-l border-gray-200 bg-white">
+    <div className="z-50 flex h-full w-full max-w-md flex-col border-l border-gray-200 bg-white font-sans text-gray-800 shadow-xl">
       {/* Header */}
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-gray-50 px-4">
-        <div>
-          <h2 className="flex items-center gap-2 font-semibold text-gray-900">
-            <Activity size={18} className="text-blue-600" /> Agentic BI
-          </h2>
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-gray-100 bg-white/80 p-4 backdrop-blur-sm">
+        <div className="rounded-lg bg-blue-100 p-1.5">
+          <Bot className="h-5 w-5 text-blue-600" />
         </div>
-        <button
-          onClick={fullscreen ? onExitFullscreen : onFullscreen}
-          className="rounded-lg p-1.5 hover:bg-gray-200"
-        >
-          {fullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-        </button>
+        <div>
+          <h2 className="text-sm font-bold text-gray-900">Agentic BI</h2>
+          <p className="text-[10px] text-gray-500">AI-Powered Analytics</p>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 space-y-4 overflow-y-auto bg-gray-50/50 p-4">
-        {messages.map((msg) => (
+      {/* Messages Area */}
+      <div className="scrollbar-thin scrollbar-thumb-gray-300 flex-1 space-y-6 overflow-y-auto p-4">
+        {messages.map((msg, idx) => (
           <div
-            key={msg.id}
-            className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
+            key={idx}
+            className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
           >
-            {/* Message Bubble */}
+            {/* Avatar */}
             <div
-              className={`max-w-[90%] rounded-2xl px-4 py-3 shadow-sm ${
+              className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full shadow-sm ${
                 msg.role === "user"
-                  ? "rounded-br-none bg-blue-600 text-white"
-                  : "rounded-bl-none border border-gray-200 bg-white text-gray-800"
+                  ? "bg-blue-600 text-white"
+                  : msg.role === "system"
+                    ? "bg-red-50 text-red-600"
+                    : "border border-gray-200 bg-white text-indigo-600"
               }`}
             >
-              {/* Text Content */}
-              <div className="prose prose-sm max-w-none">
-                {msg.type === "text" || msg.type === "error"
-                  ? msg.content
-                  : null}
-              </div>
-
-              {/* Visualization Content */}
-              {(msg.type === "chart" || msg.type === "map") && (
-                <div className="mt-2 w-full min-w-[300px]">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-gray-500 uppercase">
-                      {msg.type}
-                    </span>
-                    <button
-                      onClick={() => handleAddToDashboard(msg)}
-                      className="flex items-center gap-1 rounded bg-blue-50 px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-100"
-                    >
-                      <PlusCircle size={12} /> Add to Dashboard
-                    </button>
-                  </div>
-                  <div className="h-64 rounded-lg border border-gray-100 bg-white p-2">
-                    <DynamicWidget
-                      data={msg.data}
-                      type={
-                        msg.type === "map"
-                          ? "map"
-                          : msg.componentName?.toLowerCase().includes("bar")
-                            ? "barchart"
-                            : "linechart"
-                      }
-                      title={msg.componentName}
-                    />
-                  </div>
-                </div>
+              {msg.role === "user" ? (
+                <User size={14} />
+              ) : msg.role === "system" ? (
+                <AlertCircle size={14} />
+              ) : (
+                <Sparkles size={14} />
               )}
+            </div>
 
-              {/* Artifacts (SQL/JSON) */}
-              {msg.artifacts && msg.artifacts.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {msg.artifacts.map((art, idx) => (
-                    <details key={idx} className="group">
-                      <summary className="flex cursor-pointer items-center gap-1 text-xs text-gray-500 hover:text-blue-600">
-                        <Database size={10} /> {art.title}
-                      </summary>
-                      <pre className="mt-2 overflow-x-auto rounded bg-gray-900 p-2 text-[10px] text-green-400">
-                        {art.content}
-                      </pre>
-                    </details>
+            {/* Bubble */}
+            <div
+              className={`flex max-w-[90%] flex-col space-y-1 ${msg.role === "user" ? "items-end" : "items-start"}`}
+            >
+              {/* Workflow Steps */}
+              {msg.steps && msg.steps.length > 0 && (
+                <div className="mb-2 w-full space-y-1">
+                  {msg.steps.map((step, sIdx) => (
+                    <div
+                      key={sIdx}
+                      className="flex items-center gap-2 rounded border border-gray-100 bg-gray-50 px-2 py-1.5 text-[10px] text-gray-500"
+                    >
+                      {step.status === "running" && (
+                        <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                      )}
+                      {step.status === "complete" && (
+                        <div className="h-2 w-2 rounded-full bg-green-500" />
+                      )}
+                      {step.status === "error" && (
+                        <div className="h-2 w-2 rounded-full bg-red-500" />
+                      )}
+                      <span className="truncate font-medium">{step.label}</span>
+                    </div>
                   ))}
                 </div>
               )}
+
+              {/* Main Content */}
+              <div
+                className={`w-full rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+                  msg.role === "user"
+                    ? "rounded-br-none bg-blue-600 text-white"
+                    : msg.type === "error"
+                      ? "border border-red-100 bg-red-50 text-red-800"
+                      : "rounded-bl-none border border-gray-200 bg-gray-100 text-gray-800"
+                }`}
+              >
+                {msg.type === "chart" || msg.type === "map" ? (
+                  <div className="flex w-full min-w-[280px] flex-col gap-3">
+                    <div className="mb-1 flex items-center justify-between border-b border-gray-200 pb-2">
+                      <div className="flex items-center gap-2 font-semibold text-gray-700">
+                        <BarChart2 className="h-4 w-4 text-blue-600" />
+                        <span className="text-xs">
+                          {msg.title || "Generated Chart"}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleManualAdd(msg)}
+                        className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[10px] shadow-sm transition-all hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
+                      >
+                        <PlusCircle size={12} />
+                        Add to Dashboard
+                      </button>
+                    </div>
+                    <div className="h-48 w-full rounded border border-gray-200 bg-white p-2">
+                      <DynamicWidget data={msg.content} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="prose prose-stone prose-sm max-w-none">
+                    <ReactMarkdown>
+                      {typeof msg.content === "string" ? msg.content : ""}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ))}
-
-        {/* Status Indicator */}
-        {isStreaming && (
-          <div className="flex animate-pulse items-center gap-2 px-4 text-xs text-gray-500">
-            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500" />
-            {currentStatus}
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input Area */}
-      <div className="shrink-0 border-t border-gray-200 bg-white p-4">
-        <div className="relative">
+      <div className="border-t border-gray-100 bg-white p-4">
+        <div className="relative flex items-center rounded-xl border border-gray-200 bg-gray-50 shadow-inner transition-all focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) =>
-              e.key === "Enter" && !isStreaming && handleSendMessage()
-            }
-            placeholder="Ask a question (e.g., 'Show patient trends 2024')..."
-            className="w-full rounded-xl border border-gray-300 py-3 pr-12 pl-4 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            disabled={isStreaming}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            placeholder="Ask for a prediction..."
+            className="flex-1 border-none bg-transparent px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:ring-0"
+            disabled={isLoading}
           />
           <button
-            onClick={handleSendMessage}
-            disabled={!input.trim() || isStreaming}
-            className="absolute top-2 right-2 rounded-lg bg-blue-600 p-1.5 text-white transition-all hover:bg-blue-700 disabled:opacity-50"
+            onClick={handleSend}
+            disabled={isLoading || !input.trim()}
+            className={`mr-2 rounded-lg p-2 transition-all ${
+              input.trim() && !isLoading
+                ? "bg-blue-600 text-white shadow-md hover:bg-blue-700"
+                : "cursor-not-allowed text-gray-400"
+            }`}
           >
-            <Send size={16} />
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </button>
         </div>
       </div>
