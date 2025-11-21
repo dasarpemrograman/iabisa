@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, AsyncGenerator, Callable, Dict, List, Literal, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 import psycopg
 from dotenv import load_dotenv
@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from psycopg.rows import dict_row
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 

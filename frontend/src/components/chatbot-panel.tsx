@@ -116,7 +116,7 @@ export default function ChatbotPanel({
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n\n"); // SSE messages are separated by double newline
-        buffer = lines.pop() || ""; // Keep partial line
+        buffer = lines.pop() ?? ""; // Keep partial line
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
@@ -164,7 +164,7 @@ export default function ChatbotPanel({
             return {
               ...m,
               artifacts: [
-                ...(m.artifacts || []),
+                ...(m.artifacts ?? []),
                 { title: label, content, type: view },
               ],
             };
@@ -205,7 +205,7 @@ export default function ChatbotPanel({
       bgcolor: "#ffffff",
       grid: { colSpan: 4, rowSpan: 8 },
       data: msg.data,
-      title: msg.componentName || "New Insight",
+      title: msg.componentName ?? "",
       type: msg.type, // <--- Ensure this is present
     });
   };
@@ -213,7 +213,7 @@ export default function ChatbotPanel({
   return (
     <div className="flex h-full flex-col border-l border-gray-200 bg-white">
       {/* Header */}
-      <div className="flex h-14 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-gray-50 px-4">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-gray-50 px-4">
         <div>
           <h2 className="flex items-center gap-2 font-semibold text-gray-900">
             <Activity size={18} className="text-blue-600" /> Agentic BI
@@ -309,7 +309,7 @@ export default function ChatbotPanel({
       </div>
 
       {/* Input Area */}
-      <div className="flex-shrink-0 border-t border-gray-200 bg-white p-4">
+      <div className="shrink-0 border-t border-gray-200 bg-white p-4">
         <div className="relative">
           <input
             type="text"

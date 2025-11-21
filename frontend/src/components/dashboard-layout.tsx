@@ -90,9 +90,9 @@ export default function DashboardLayout() {
       {/* Divider */}
       <div
         onMouseDown={handleMouseDown}
-        className={`w-1 cursor-col-resize bg-gradient-to-b from-transparent via-gray-300 to-transparent transition-colors hover:bg-gradient-to-b hover:from-transparent hover:via-gray-400 hover:to-transparent ${
+        className={`w-1 cursor-col-resize bg-linear-to-b from-transparent via-gray-300 to-transparent transition-colors hover:bg-linear-to-b hover:from-transparent hover:via-gray-400 hover:to-transparent ${
           isDragging
-            ? "bg-gradient-to-b from-transparent via-blue-400 to-transparent"
+            ? "bg-linear-to-b from-transparent via-blue-400 to-transparent"
             : ""
         }`}
         style={{

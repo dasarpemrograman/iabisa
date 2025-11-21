@@ -1,12 +1,8 @@
 import logging
 import shutil
 import tempfile
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import numpy as np
-import pandas as pd
+from typing import Any, List, Optional
 
 # Assumes faskes/predict.py is in backend/faskes/
 from faskes.predict import predict_xgboost_multistep
