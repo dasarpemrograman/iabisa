@@ -1,0 +1,62 @@
+services:
+    # 1. Database (PostgreSQL)
+    postgres:
+        image: postgres:15-alpine
+        container_name: iabisa-postgres
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER:-postgres}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+            POSTGRES_DB: ${POSTGRES_DB:-iabisa}
+        ports:
+            - "5432:5432"
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        restart: always
+
+    # 2. Backend API (FastAPI)
+    backend:
+        build: ./backend
+        container_name: iabisa-backend
+        ports:
+            - "8000:8000"
+        env_file:
+            - ./backend/.env
+        environment:
+            API_HOST: "0.0.0.0"
+            API_PORT: "8000"
+            DB_FILE_PATH: "Chinook_Sqlite.sqlite"
+        restart: on-failure
+
+    # 3. Streamlit UI (New Service!)
+    streamlit:
+        build: ./backend # Reuses the backend image context
+        container_name: iabisa-streamlit
+        # Override the default uvicorn command
+        command: uv run streamlit run ui.py --server.port 8501 --server.address 0.0.0.0
+        ports:
+            - "8501:8501"
+        env_file:
+            - ./backend/.env # Loads keys if needed
+        environment:
+            # Tells ui.py to talk to the backend container
+            - API_URL=http://backend:8000/generate-chart-stream
+        depends_on:
+            - backend
+        restart: on-failure
+
+    # 4. Frontend (Next.js)
+    frontend:
+        build: ./frontend
+        container_name: iabisa-frontend
+        ports:
+            - "3000:3000"
+        environment:
+            DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-iabisa}"
+            NODE_ENV: "production"
+        depends_on:
+            - postgres
+            - backend
+        restart: on-failure
+
+volumes:
+    postgres_data:
