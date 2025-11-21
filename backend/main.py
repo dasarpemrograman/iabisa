@@ -1,14 +1,16 @@
 import json
 import logging
 import os
-import sqlite3
 import sys
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
@@ -26,7 +28,7 @@ logger = logging.getLogger("AgenticBI")
 
 load_dotenv()
 
-DB_FILE_PATH = os.getenv("DB_FILE_PATH", "Chinook_Sqlite.sqlite")
+DATABASE_URL = os.getenv("DATABASE_URL")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-flash-lite-latest")
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -36,13 +38,17 @@ if not GEMINI_API_KEY:
     logger.critical("GEMINI_API_KEY is missing from environment variables.")
     sys.exit(1)
 
+if not DATABASE_URL:
+    logger.critical("DATABASE_URL is missing from environment variables.")
+    sys.exit(1)
+
 # GoogleModel expects GOOGLE_API_KEY in the environment
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
 try:
     llm_model = GoogleModel(model_name=LLM_MODEL_NAME)
     logger.info("Google Gemini Model initialized: %s", LLM_MODEL_NAME)
-except Exception as exc:  # pragma: no cover - startup failure
+except Exception as exc:
     logger.critical("Failed to initialize Google Model: %s", exc)
     sys.exit(1)
 
@@ -50,7 +56,7 @@ app = FastAPI(title="Enterprise Agentic BI API (Gemini)", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for production as needed
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,54 +68,34 @@ app.add_middleware(
 
 
 class DatabaseInspector:
-    """Introspects and queries a SQLite database in a schema-agnostic way."""
+    """Introspects and queries a PostgreSQL database."""
 
-    _TEXTUAL_TYPES = ("TEXT", "CHAR", "NVARCHAR", "VARCHAR")
+    _TEXTUAL_TYPES = ("TEXT", "CHAR", "VARCHAR", "CHARACTER VARYING", "STRING")
     _MAX_CATEGORY_VALUES = 25
     _SAMPLE_LIMIT = 3
 
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
-        self._log_db_presence()
+    def __init__(self, db_url: str) -> None:
+        self.db_url = db_url
 
-    def _log_db_presence(self) -> None:
-        if os.path.exists(self.db_path):
-            logger.info("Using SQLite database at: %s", self.db_path)
-        else:
-            logger.warning(
-                "Database file not found at initialization: %s", self.db_path
-            )
-
-    def _ensure_db_exists(self) -> None:
-        if not os.path.exists(self.db_path):
-            raise FileNotFoundError(f"Database file not found at: {self.db_path}")
-
-    def _get_connection(self) -> sqlite3.Connection:
-        self._ensure_db_exists()
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _get_connection(self) -> psycopg.Connection:
+        return psycopg.connect(self.db_url, row_factory=dict_row)
 
     def get_schema_summary(self) -> str:
         """
-        Return a human-readable schema summary with basic category/sample info.
-        Designed to be fed directly into the LLM as context.
+        Return a human-readable schema summary using PostgreSQL information_schema.
         """
-        if not os.path.exists(self.db_path):
-            return f"ERROR: Database file '{self.db_path}' does not exist."
-
         try:
-            conn = self._get_connection()
-            try:
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
+
                 cursor.execute(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"
                 )
-                tables = [row["name"] for row in cursor.fetchall()]
+                tables = [row["table_name"] for row in cursor.fetchall()]
 
                 report_lines: List[str] = [
-                    f"DATABASE SOURCE: {self.db_path}",
+                    f"DATABASE TYPE: PostgreSQL",
                     "SCHEMA REPORT:",
                 ]
 
@@ -117,12 +103,16 @@ class DatabaseInspector:
                     report_lines.append(f"\nTABLE: '{table}'")
                     report_lines.append("COLUMNS:")
 
-                    cursor.execute(f"PRAGMA table_info({table})")
+                    cursor.execute(
+                        "SELECT column_name, data_type FROM information_schema.columns "
+                        "WHERE table_name = %s AND table_schema = 'public'",
+                        (table,),
+                    )
                     columns = cursor.fetchall()
 
                     for col in columns:
-                        col_name = col["name"]
-                        col_type = col["type"] or ""
+                        col_name = col["column_name"]
+                        col_type = col["data_type"] or ""
                         sample_info = self._build_column_sample_info(
                             cursor=cursor,
                             table=table,
@@ -132,41 +122,38 @@ class DatabaseInspector:
                         report_lines.append(f"  - {col_name} ({col_type}){sample_info}")
 
                 return "\n".join(report_lines)
-            finally:
-                conn.close()
         except Exception as exc:
             logger.exception("Error while inspecting database schema: %s", exc)
             return f"Error inspecting DB: {exc}"
 
     def _build_column_sample_info(
         self,
-        cursor: sqlite3.Cursor,
+        cursor: psycopg.Cursor,
         table: str,
         col_name: str,
         col_type: str,
     ) -> str:
-        """
-        For textual columns, return either category list or small sample list.
-        Failure to introspect samples is non-fatal.
-        """
         is_text = any(t in col_type.upper() for t in self._TEXTUAL_TYPES)
         if not is_text:
             return ""
 
         try:
-            cursor.execute(f"SELECT COUNT(DISTINCT {col_name}) FROM {table}")
-            distinct_count = cursor.fetchone()[0]
+            # Use identifiers to handle special characters/casing safely in sampling queries
+            quoted_col = f'"{col_name}"'
+
+            cursor.execute(f"SELECT COUNT(DISTINCT {quoted_col}) as cnt FROM {table}")
+            distinct_count = cursor.fetchone()["cnt"]
 
             if 0 < distinct_count < self._MAX_CATEGORY_VALUES:
-                cursor.execute(f"SELECT DISTINCT {col_name} FROM {table}")
-                values = [str(row[0]) for row in cursor.fetchall()]
+                cursor.execute(f"SELECT DISTINCT {quoted_col} as val FROM {table}")
+                values = [str(row["val"]) for row in cursor.fetchall()]
                 return f" (Categories: {values})"
 
             cursor.execute(
-                f"SELECT {col_name} FROM {table} "
-                f"WHERE {col_name} IS NOT NULL LIMIT {self._SAMPLE_LIMIT}"
+                f"SELECT {quoted_col} as val FROM {table} "
+                f"WHERE {quoted_col} IS NOT NULL LIMIT {self._SAMPLE_LIMIT}"
             )
-            values = [str(row[0]) for row in cursor.fetchall()]
+            values = [str(row["val"]) for row in cursor.fetchall()]
             return f" (Examples: {values})"
         except Exception as exc:
             logger.debug(
@@ -177,20 +164,17 @@ class DatabaseInspector:
     def execute_query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute a SQL query and return rows as list[dict]."""
         try:
-            conn = self._get_connection()
-            try:
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(sql)
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
-            finally:
-                conn.close()
         except Exception as exc:
             logger.error("SQL execution failed: %s", exc)
             return [{"error": f"SQL Execution Failed: {exc}"}]
 
 
-inspector = DatabaseInspector(DB_FILE_PATH)
+inspector = DatabaseInspector(DATABASE_URL)
 logger.info("Inspecting database schema for dynamic context...")
 DYNAMIC_SCHEMA_CONTEXT = inspector.get_schema_summary()
 logger.info("Schema context loaded.")
@@ -246,11 +230,13 @@ def _make_sql_agent() -> Agent[None, SQLResponse]:
         output_type=SQLResponse,
         retries=2,
         system_prompt=(
-            "You are a generic SQL Engine capable of querying ANY SQLite database.\n"
+            "You are a generic SQL Engine capable of querying a PostgreSQL database.\n"
             f"SCHEMA:\n{DYNAMIC_SCHEMA_CONTEXT}\n"
             "INSTRUCTIONS:\n"
             "1. Map user intent to valid tables/columns.\n"
-            "2. Return valid SQLite SQL in the `sql_query` field.\n"
+            "2. Return valid PostgreSQL SQL in the `sql_query` field.\n"
+            "3. CRITICAL: If a table or column name has mixed case (e.g., 'createdAt'), "
+            'you MUST wrap it in double quotes (e.g., "createdAt"). PostgreSQL is case-sensitive for identifiers.\n'
         ),
     )
 
@@ -268,6 +254,7 @@ def _make_bi_reviewer_agent() -> Agent[None, BIReviewResponse]:
             "2. Add LIMIT 100 if results could be large.\n"
             "3. Use AS aliases for readability.\n"
             "4. Ensure the query is safe and read-only.\n"
+            '5. PRESERVE double quotes on mixed-case column names (e.g., "createdAt").\n'
         ),
     )
 
@@ -313,6 +300,13 @@ evaluator_agent = _make_evaluator_agent()
 # ==============================================================================
 
 
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
 def create_event(
     event_type: str,
     label: str = "",
@@ -320,16 +314,6 @@ def create_event(
     content: Any = None,
     view: str = "text",
 ) -> str:
-    """
-    Create a single Server-Sent Event line.
-
-    The frontend expects:
-    - `type`: semantic classification (status, log, artifact, final, ...)
-    - `label`: short label for UI
-    - `state`: running | complete | error
-    - `content`: arbitrary JSON-serializable payload
-    - `view`: rendering hint for the client (text, sql, json, etc.)
-    """
     payload = {
         "type": event_type,
         "label": label,
@@ -337,22 +321,12 @@ def create_event(
         "content": content,
         "view": view,
     }
-    return f"data: {json.dumps(payload)}\n\n"
+    # CHANGED: Add default=json_serial to handle datetime objects
+    return f"data: {json.dumps(payload, default=json_serial)}\n\n"
 
 
 @app.post("/generate-chart-stream")
 async def generate_chart_stream(request: QueryRequest) -> StreamingResponse:
-    """
-    Main Agentic BI pipeline exposed as an SSE endpoint.
-
-    Stages:
-    1. SQL drafting
-    2. BI optimization
-    3. Database execution
-    4. Chart generation (React/Recharts)
-    5. Code evaluation / auto-fix
-    """
-
     async def event_generator():
         try:
             logger.info("Processing query: %s", request.query)
@@ -473,11 +447,7 @@ async def generate_chart_stream(request: QueryRequest) -> StreamingResponse:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-# ==============================================================================
-# 6. ENTRYPOINT
-# ==============================================================================
-
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     import uvicorn
 
     logger.info("Starting Gemini-powered API on %s:%s", API_HOST, API_PORT)

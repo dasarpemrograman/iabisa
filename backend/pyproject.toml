@@ -10,4 +10,5 @@ dependencies = [
     "pydantic-ai>=1.21.0",
     "python-dotenv>=1.2.1",
     "streamlit>=1.51.0",
+    "psycopg[binary]>=3.2.0",
 ]
