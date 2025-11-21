@@ -1,4 +1,5 @@
-import "~/styles/globals.css";
+import "@/styles/globals.css";
+import { DashboardProvider } from "@/context/dashboard-context";
 
 import { type Metadata } from "next";
 import { Geist } from "next/font/google";
@@ -16,10 +17,14 @@ const geist = Geist({
 
 export default function RootLayout({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en" className={`${geist.variable}`}>
-      <body>{children}</body>
+    <html lang="en">
+      <body>
+        <DashboardProvider>{children}</DashboardProvider>
+      </body>
     </html>
   );
 }

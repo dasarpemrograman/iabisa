@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+
+import { useState, useMemo, useEffect } from "react";
 import Box from "@mui/material/Box";
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
@@ -10,14 +11,8 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { arraySwap, SortableContext } from "@dnd-kit/sortable";
+import { SortableContext } from "@dnd-kit/sortable";
 import { useDebouncedCallback } from "use-debounce";
-
-import { Grid } from "../app/Grid";
-import { SortableArea } from "../app/SortableArea";
-import { Area } from "../app/Area";
-import { nanoid } from "nanoid";
-
 import {
   LineChart,
   Line,
@@ -30,21 +25,19 @@ import {
   Bar,
   Legend,
 } from "recharts";
-import BPJSIndonesiaMap from "../components/map";
 
-const dark = createTheme({
-  palette: {
-    mode: "dark",
-  },
-});
+// Internal Component Imports
+import { Grid } from "../app/Grid";
+import { SortableArea } from "../app/SortableArea";
+import { useDashboard } from "@/context/dashboard-context";
+import DynamicWidget from "./dynamic-chart";
+import BPJSIndonesiaMap from "./map";
 
-const light = createTheme({
-  palette: {
-    mode: "light",
-  },
-});
+// --- THEME SETUP ---
+const dark = createTheme({ palette: { mode: "dark" } });
+const light = createTheme({ palette: { mode: "light" } });
 
-// sample data for charts
+// --- SAMPLE DATA (Legacy) ---
 const hourlyData = [
   { time: "00:00", value: 40 },
   { time: "02:00", value: 30 },
@@ -67,6 +60,8 @@ const categoryData = [
   { name: "D", count: 75 },
   { name: "E", count: 45 },
 ];
+
+// --- WIDGET COMPONENTS ---
 
 function WidgetBase({ children, fill, scroll, ...props }) {
   return (
@@ -136,7 +131,6 @@ function BarChartWidget() {
   );
 }
 
-// Keep some of the original simple widgets for variety
 function TimeWidget() {
   const [time, setTime] = useState(null);
   useEffect(() => {
@@ -167,87 +161,50 @@ function TimeWidget() {
   );
 }
 
+// --- WIDGET REGISTRY ---
 const widgets = {
   linechart: LineChartWidget,
   barchart: BarChartWidget,
-  // map widget - wrap the imported map component so it can receive the `data` prop if needed
-  map: (props) => <BPJSIndonesiaMap {...props} />,
   time: TimeWidget,
+  // Map uses a wrapper to ensure it handles props correctly
+  map: (props) => <BPJSIndonesiaMap {...props} />,
+  // Dynamic chart handles AI output
+  "dynamic-chart": DynamicWidget,
 };
 
 function Content({ data }) {
   const Widget =
     widgets[data.widget] ??
-    (() => <WidgetBase>{JSON.stringify(data)}</WidgetBase>);
-  return <Widget data={data} />;
+    (() => <WidgetBase>Unknown Widget: {data.widget}</WidgetBase>);
+
+  // Pass specific props for DynamicWidget (data, type, title)
+  // Pass generic props for legacy widgets
+  return <Widget {...data} type={data.widget} />;
 }
 
-const initialState = [
-  {
-    id: "chart-1",
-    widget: "linechart",
-    bgcolor: "#ffffff",
-    grid: {
-      colSpan: 8,
-      rowSpan: 10,
-    },
-  },
-  {
-    id: "chart-2",
-    widget: "barchart",
-    bgcolor: "#ffffff",
-    grid: {
-      colSpan: 4,
-      rowSpan: 10,
-    },
-  },
-  {
-    id: "map-1",
-    widget: "map",
-    bgcolor: "#ffffff",
-    grid: {
-      // make the map a larger item by default
-      colSpan: 8,
-      rowSpan: 12,
-    },
-    // optional: you can provide data through this field if BPJSIndonesiaMap is adapted to accept it
-    data: {},
-  },
-  {
-    id: "time-1",
-    widget: "time",
-    bgcolor: "#f3f3f3",
-    grid: {
-      colSpan: 4,
-      rowSpan: 4,
-    },
-  },
-];
+// --- MAIN EXPORT ---
 
 export default function DashBoardContent() {
   const [darkTheme, setDarkTheme] = useState(false);
-  const [items, setItems] = useState(initialState);
+
+  // Access global state from Context
+  const { items, updateGrid, reorderItems } = useDashboard();
+
   const itemIds = useMemo(() => items.map((item) => item.id), [items]);
   const [activeId, setActiveId] = useState(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      // default
+      activationConstraint: { distance: 5 },
     }),
   );
 
-  // debounced reordering on drag over to avoid too many swaps
+  // Debounced reordering to prevent flicker
   const handleDragOver = useDebouncedCallback(
     ({ active, over }) => {
       if (!over || active.id === over.id) return;
-      setItems((previousState) => {
-        const oldIndex = previousState.findIndex(
-          (item) => item.id === active.id,
-        );
-        const newIndex = previousState.findIndex((item) => item.id === over.id);
-        if (oldIndex === -1 || newIndex === -1) return previousState;
-        return arraySwap(previousState, oldIndex, newIndex);
-      });
+      // Call context function to swap items
+      reorderItems(active.id, over.id);
     },
     150,
     { leading: true },
@@ -256,41 +213,29 @@ export default function DashBoardContent() {
   return (
     <ThemeProvider theme={darkTheme ? dark : light}>
       <CssBaseline />
-      <Box sx={{ py: 2, px: { xs: 1, sm: 2, md: 3, lg: 4 } }}>
+      <Box sx={{ py: 2, px: { xs: 1, sm: 2, md: 3, lg: 4 }, height: "100%" }}>
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
           onDragStart={(event) => setActiveId(event.active.id)}
-          onDragOver={(event) => handleDragOver(event)}
+          onDragOver={handleDragOver}
           onDragEnd={() => setActiveId(null)}
-          onDragCancel={() => setActiveId(null)}
         >
           <SortableContext items={itemIds} strategy={() => {}}>
-            <Grid columns={4} gap={2}>
+            {/* CHANGED: Gap reduced from 10 to 2 */}
+            <Grid columns={12} gap={2}>
               {items.map((props, index) => (
                 <SortableArea
                   key={props.id}
                   {...props}
                   index={index}
-                  onGridChange={(grid) => {
-                    setItems((previousState) =>
-                      previousState.map((previousItem) =>
-                        previousItem.id === props.id
-                          ? { ...previousItem, grid }
-                          : previousItem,
-                      ),
-                    );
-                  }}
+                  onGridChange={(grid) => updateGrid(props.id, grid)}
                 >
                   <Content data={props} />
                 </SortableArea>
               ))}
             </Grid>
           </SortableContext>
-
-          {/* Drag overlay shows the active item while dragging */}
-          {/* Keep overlay simple and re-use Area for consistency */}
-          {/* (activeId logic handled above) */}
         </DndContext>
       </Box>
     </ThemeProvider>
