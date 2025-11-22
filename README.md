@@ -1,4 +1,4 @@
-Collecting workspace information# IABISA - Intelligent Agentic Business Intelligence System for Healthcare Analytics
+# IABISA - Intelligent Agentic Business Intelligence System for Healthcare Analytics
 
 A comprehensive healthcare analytics platform combining AI-powered conversational interfaces with predictive modeling for Indonesian healthcare facilities (Faskes), diseases (Penyakit), and participants (Peserta).
 
