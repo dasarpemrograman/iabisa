@@ -29,7 +29,7 @@ logger = logging.getLogger("AgenticBI")
 load_dotenv()
 
 # Use direct connection for SQL queries (admin queries)
-DATABASE_URL = os.getenv("DATABASE_URL_DIRECT")
+DATABASE_URL = os.getenv("DATABASE_URL")
 # Pooler connection is used by prediction modules via DATABASE_URL env var
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-flash-lite-latest")
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
@@ -145,6 +145,22 @@ class DatabaseInspector:
                     rows = cursor.fetchall()
                     return [dict(row) for row in rows]
                 return []
+        except psycopg.OperationalError as exc:
+            # Try using pooler connection as fallback
+            pooler_url = os.getenv('DATABASE_URL')
+            if pooler_url and pooler_url != self.db_url:
+                logger.info("Direct connection failed, trying pooler connection...")
+                try:
+                    with psycopg.connect(pooler_url, row_factory=dict_row) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(sql)
+                        if cursor.description:
+                            rows = cursor.fetchall()
+                            return [dict(row) for row in rows]
+                        return []
+                except Exception as pooler_exc:
+                    return [{"error": f"SQL Execution Failed (both direct and pooler): {pooler_exc}"}]
+            return [{"error": f"SQL Execution Failed: {exc}"}]
         except Exception as exc:
             return [{"error": f"SQL Execution Failed: {exc}"}]
 
