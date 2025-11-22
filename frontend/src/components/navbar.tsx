@@ -13,37 +13,38 @@ export default function Navbar() {
     <nav
       className="flex h-16 items-center justify-between border-b px-6 shadow-sm"
       style={{
-        background: "linear-gradient(90deg, #44853B 0%, #3a6f34 100%)",
-        borderColor: "#2d5a28",
+        background: "linear-gradient(90deg, #ffffff 0%, #e8f5e9 35%, #3d7d36 100%)",
+        borderColor: "#dfe6dd",
       }}
     >
-      {/* Logo */}
+      {/* Left: Logo */}
       <div className="flex items-center gap-3">
-        <div
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold text-white shadow-md"
-          style={{ background: "#2d5a28" }}
-        >
-          DB
+        <div className="flex items-center rounded-xl py-1 shadow-sm">
+          <img
+            src="/logo.png"
+            alt="Logo"
+            className="h-1/2 w-1/2 object-contain"
+          />
         </div>
-        <span className="text-lg font-semibold text-white">Dashboard</span>
       </div>
 
       {/* Role Dropdown */}
       <div className="relative">
         <button
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-2 rounded-lg border bg-white px-4 py-2 transition-colors hover:bg-gray-100"
+          className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium shadow-sm transition-all hover:bg-white"
           style={{
-            borderColor: "rgba(255, 255, 255, 0.3)",
-            color: "#44853B",
+            borderColor: "rgba(0, 0, 0, 0.1)",
+            backgroundColor: "rgba(255, 255, 255, 0.9)",
+            color: "#3d7d36",
           }}
         >
-          <span className="text-sm font-medium">{selectedRole}</span>
-          <ChevronDown size={16} />
+          {selectedRole}
+          <ChevronDown size={16} className="opacity-70" />
         </button>
 
         {isOpen && (
-          <div className="absolute right-0 z-50 mt-2 w-40 rounded-lg border border-gray-200 bg-white shadow-lg">
+          <div className="absolute right-0 z-50 mt-2 w-40 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-md">
             {roles.map((role) => (
               <button
                 key={role}
@@ -53,12 +54,9 @@ export default function Navbar() {
                 }}
                 className={`w-full px-4 py-2 text-left text-sm transition-colors ${
                   selectedRole === role
-                    ? "text-white"
-                    : "text-gray-700 hover:bg-gray-50"
+                    ? "bg-green-600 text-white"
+                    : "text-gray-700 hover:bg-gray-100"
                 }`}
-                style={{
-                  background: selectedRole === role ? "#44853B" : "transparent",
-                }}
               >
                 {role}
               </button>
