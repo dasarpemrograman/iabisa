@@ -12,13 +12,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from psycopg.rows import dict_row
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 
-from rag import get_rag_engine
 from routers.prediction import PredictionService
-from routers.rag import router as rag_router
 
 # --- CONFIGURATION ---
 logging.basicConfig(
@@ -63,9 +61,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount RAG router
-app.include_router(rag_router)
 
 # ==============================================================================
 # 1. DATABASE INSPECTOR
@@ -139,10 +134,7 @@ class DatabaseInspector:
                 return "\n".join(report_lines)
         except Exception as exc:
             logger.warning("Error inspecting schema (using fallback): %s", exc)
-            return (
-                "DATABASE TYPE: PostgreSQL\n"
-                "Note: Schema inspection unavailable. Connection to database may be limited."
-            )
+            return "DATABASE TYPE: PostgreSQL\nNote: Schema inspection unavailable. Connection to database may be limited."
 
     def execute_query(self, sql: str) -> List[Dict[str, Any]]:
         try:
@@ -155,7 +147,7 @@ class DatabaseInspector:
                 return []
         except psycopg.OperationalError as exc:
             # Try using pooler connection as fallback
-            pooler_url = os.getenv("DATABASE_URL")
+            pooler_url = os.getenv('DATABASE_URL')
             if pooler_url and pooler_url != self.db_url:
                 logger.info("Direct connection failed, trying pooler connection...")
                 try:
@@ -167,11 +159,7 @@ class DatabaseInspector:
                             return [dict(row) for row in rows]
                         return []
                 except Exception as pooler_exc:
-                    return [
-                        {
-                            "error": f"SQL Execution Failed (both direct and pooler): {pooler_exc}"
-                        }
-                    ]
+                    return [{"error": f"SQL Execution Failed (both direct and pooler): {pooler_exc}"}]
             return [{"error": f"SQL Execution Failed: {exc}"}]
         except Exception as exc:
             return [{"error": f"SQL Execution Failed: {exc}"}]
@@ -192,7 +180,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    history: List[Message] = Field(default_factory=list)
+    history: List[Message] = []
 
 
 # --- WORKFLOW STATE (The "Context" that flows through steps) ---
@@ -205,8 +193,6 @@ class WorkflowContext(BaseModel):
     data: Optional[List[Dict[str, Any]]] = None
     final_response: Optional[Any] = None
     error: Optional[str] = None
-    rag_context: Optional[str] = None
-    rag_sources: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -267,10 +253,7 @@ router_agent = Agent(
 
 chat_agent = Agent(
     llm_model,
-    system_prompt=(
-        "You are a helpful BI Assistant. Answer politely. "
-        "If asked about data, refer to tools."
-    ),
+    system_prompt="You are a helpful BI Assistant. Answer politely. If asked about data, refer to tools.",
 )
 
 sql_agent = Agent(
@@ -300,13 +283,13 @@ chart_agent = Agent(
     output_type=RechartsCodeResponse,
     system_prompt=(
         "You are a Data Visualization Expert. "
-        "Return a JSON object with TWO fields: "
-        '"component_name" (a valid React component name as string) and '
-        '"code" (the full React component source code that uses Recharts). '
-        "The code must NOT include the data itself, it should accept a `data` prop. "
-        "Do NOT write `const data =` inside the component. "
-        "Return ONLY valid JSON matching this schema: "
-        '{ "component_name": "MyChartComponent", "code": "<react code here>" }.'
+        "Generate a JSON configuration for Recharts based on the data schema. "
+        "The JSON must strictly follow this structure: "
+        '{ "type": "linechart" | "barchart" | "areachart", '
+        '  "xAxisKey": "string (column name for X axis)", '
+        '  "series": [{ "dataKey": "string (column name for Y axis)", "label": "string", "color": "hex string" }] '
+        "}. "
+        "Do NOT include the actual data values. Do NOT write 'const data ='. Return ONLY valid JSON."
     ),
 )
 
@@ -350,14 +333,6 @@ def json_serial(obj):
         return obj.isoformat()
     if isinstance(obj, Decimal):
         return float(obj)
-    if isinstance(obj, BaseModel):
-        # Pydantic model – make it JSON-serializable
-        return obj.model_dump()
-    # Fallbacks for arbitrary objects that provide dict-like exports
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    if hasattr(obj, "dict"):
-        return obj.dict()
     raise TypeError(f"Type {type(obj)} not serializable")
 
 
@@ -385,33 +360,6 @@ def format_history(msgs: List[Message]) -> str:
 # --- STEP 1: ROUTING ---
 async def step_identify_intent(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     yield create_event("status", "🧠 Analyzing Intent...", "running")
-
-    # Check if RAG context is available
-    try:
-        rag_engine = get_rag_engine()
-        stats = rag_engine.get_stats()
-        if stats.get("total_documents", 0) > 0:
-            yield create_event("status", "📚 Retrieving relevant context...", "running")
-            rag_result = rag_engine.query(ctx.request.message, top_k=3)
-            if rag_result["success"] and rag_result["context"]:
-                ctx.rag_context = rag_result["context"]
-                ctx.rag_sources = rag_result["sources"]
-                yield create_event(
-                    "log",
-                    f"Retrieved {len(rag_result['sources'])} relevant sources",
-                    "running",
-                )
-            else:
-                ctx.rag_context = None
-                ctx.rag_sources = []
-        else:
-            ctx.rag_context = None
-            ctx.rag_sources = []
-    except Exception as e:
-        logger.warning(f"RAG retrieval skipped: {e}")
-        ctx.rag_context = None
-        ctx.rag_sources = []
-
     history_text = format_history(ctx.request.history)
     full_prompt = f"History:\n{history_text}\n\nUser Input: {ctx.request.message}"
 
@@ -423,34 +371,8 @@ async def step_identify_intent(ctx: WorkflowContext) -> AsyncGenerator[str, None
 # --- STEP 2: GENERAL CHAT ---
 async def step_general_chat(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     history_text = format_history(ctx.request.history)
-
-    # Prefer answering with RAG context when available
-    if ctx.rag_context:
-        enhanced_prompt = f"""
-Relevant Context from Documents:
-{ctx.rag_context}
-
----
-{history_text}
-User: {ctx.request.message}
-
-Please answer using the provided context when relevant. If you cite information, mention it's from the documents.
-"""
-        result = await chat_agent.run(enhanced_prompt)
-        answer = result.output
-
-        if ctx.rag_sources:
-            sources_text = "\n\n📚 **Sources:**\n"
-            for source in ctx.rag_sources[:3]:
-                filename = source.get("metadata", {}).get("file_name", "Unknown")
-                score = source.get("score", 0)
-                sources_text += f"- {filename} (relevance: {score:.2%})\n"
-            answer += sources_text
-    else:
-        result = await chat_agent.run(f"{history_text}\nUser: {ctx.request.message}")
-        answer = result.output
-
-    yield create_event("final", content=answer, view="text", state="complete")
+    result = await chat_agent.run(f"{history_text}\nUser: {ctx.request.message}")
+    yield create_event("final", content=result.output, view="text", state="complete")
 
 
 # --- STEP 3: PREDICTION (Full Implementation) ---
@@ -464,17 +386,11 @@ async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     # Defaults if agent misses them
     start_year = params.year if params.year else datetime.now().year
     dataset = params.dataset if params.dataset else "fkrtl"
-    # Use extracted n_years, default to 1 for single-year questions
+    # Use extracted n_years, default to 1 for single-year questions, or 3 for general trends
     n_years = params.n_years if params.n_years else 1
 
     # Log extracted parameters for debugging
-    logger.info(
-        "Extracted prediction params - dataset: %s, year: %s, n_years: %s, provinces: %s",
-        dataset,
-        start_year,
-        n_years,
-        params.provinces,
-    )
+    logger.info(f"Extracted prediction params - dataset: {dataset}, year: {start_year}, n_years: {n_years}, provinces: {params.provinces}")
 
     yield create_event("status", f"🧠 Running Model ({dataset})...", "running")
 
@@ -487,21 +403,11 @@ async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
             provinces=params.provinces,
         )
 
-        # Make sure ctx.data is JSON-serializable (dicts, not models)
-        predictions = getattr(pred_result, "predictions", None)
-        if predictions is None:
-            ctx.data = []
-        else:
-            ctx.data = [
-                p.model_dump() if isinstance(p, BaseModel) else p for p in predictions
-            ]
+        ctx.data = pred_result.predictions
 
         if not ctx.data:
             yield create_event(
-                "final",
-                state="complete",
-                content="No prediction data generated.",
-                view="text",
+                "final", "No prediction data generated.", view="text", state="complete"
             )
             return
 
@@ -521,7 +427,7 @@ async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
         # Build title based on actual prediction range
         end_year = start_year + n_years - 1
         year_display = str(start_year) if n_years == 1 else f"{start_year}-{end_year}"
-
+        
         payload = {
             "component_name": chart_res.output.component_name,
             "react_code": chart_res.output.code,
@@ -589,12 +495,7 @@ async def step_execute_query(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
 async def step_format_response(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     if ctx.error or not ctx.data:
         if not ctx.error:
-            yield create_event(
-                "final",
-                state="complete",
-                content="No data found.",
-                view="text",
-            )
+            yield create_event("final", "No data found.", view="text", state="complete")
         return
 
     # A. TEXT SUMMARY
@@ -656,7 +557,7 @@ async def run_pipeline(request: ChatRequest):
             yield event
 
         # 2. Select Recipe based on Intent
-        pipeline_steps: List[Any] = []
+        pipeline_steps = []
 
         if ctx.intent == "general_chat":
             pipeline_steps = [step_general_chat]

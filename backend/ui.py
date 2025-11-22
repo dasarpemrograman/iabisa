@@ -1,6 +1,5 @@
 import json
 import os
-from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -8,7 +7,7 @@ import requests
 import streamlit as st
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Agentic BI + RAG", layout="wide")
+st.set_page_config(page_title="Agentic BI - Dev Console", layout="wide")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -18,111 +17,20 @@ with st.sidebar:
     st.header("🔌 Connection")
     api_url = st.text_input("API URL", "http://localhost:8000")
 
-    st.markdown("---")
-    st.header("📚 RAG System")
-
-    # Check RAG health
-    try:
-        health_resp = requests.get(f"{api_url}/rag/health", timeout=2)
-        if health_resp.ok:
-            health_data = health_resp.json()
-            if health_data["rag_enabled"]:
-                st.success(f"✅ Active: {health_data['documents_indexed']} docs")
-            else:
-                st.warning("⚠️ Not Ready")
-        else:
-            st.error("❌ Unavailable")
-    except:
-        st.info("🔌 Checking...")
-
-    # Document upload section
-    st.markdown("### 📤 Upload Documents")
-    uploaded_files = st.file_uploader(
-        "Attach files to enhance AI",
-        type=["pdf", "txt", "md", "docx"],
-        accept_multiple_files=True,
-        help="Upload documents for RAG-enhanced answers",
-    )
-
-    if uploaded_files and st.button("📥 Index Documents", type="primary"):
-        with st.spinner("Uploading and indexing..."):
-            files_payload = [
-                ("files", (f.name, f.getvalue(), f.type)) for f in uploaded_files
-            ]
-            try:
-                upload_resp = requests.post(
-                    f"{api_url}/rag/upload", files=files_payload, timeout=60
-                )
-                if upload_resp.ok:
-                    result = upload_resp.json()
-                    st.success(
-                        f"✅ {result['indexed_count']} docs, {result['chunk_count']} chunks"
-                    )
-                    st.rerun()
-                else:
-                    st.error(f"❌ Upload failed: {upload_resp.text}")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-
-    # RAG Stats
-    st.markdown("### 📊 Statistics")
-    try:
-        stats_resp = requests.get(f"{api_url}/rag/stats", timeout=2)
-        if stats_resp.ok:
-            stats = stats_resp.json()
-            st.metric("Documents", stats["total_documents"])
-            st.caption(f"Chunks: {stats['chunk_size']} tokens")
-        else:
-            st.caption("Stats unavailable")
-    except:
-        pass
-
-    # View documents
-    with st.expander("📄 View Documents"):
-        try:
-            docs_resp = requests.get(f"{api_url}/rag/documents", timeout=3)
-            if docs_resp.ok:
-                docs = docs_resp.json()
-                if docs:
-                    for doc in docs[:10]:
-                        st.caption(f"• {doc['filename']} ({doc['size'] // 1024}KB)")
-                else:
-                    st.info("No documents")
-            else:
-                st.error("Failed to load")
-        except:
-            st.caption("Error loading docs")
-
-    # Clear all
-    st.markdown("---")
-    if st.button("🗑️ Clear All Documents", type="secondary"):
-        if st.session_state.get("confirm_clear"):
-            try:
-                clear_resp = requests.post(f"{api_url}/rag/clear", timeout=10)
-                if clear_resp.ok:
-                    st.success("✅ Cleared")
-                    st.session_state.confirm_clear = False
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Error: {e}")
-        else:
-            st.session_state.confirm_clear = True
-            st.warning("⚠️ Click again to confirm")
-
-    # Clear chat
-    st.markdown("---")
-    if st.button("🧹 Clear Chat"):
+    if st.button("Clear Chat"):
         st.session_state.messages = []
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 💡 Tips")
-    st.caption("• Upload docs for context-aware answers")
-    st.caption("• Ask about predictions, SQL, or chat")
-    st.caption("• RAG auto-enhances responses")
+    st.markdown("### 🛠 Testing Guide")
+    st.markdown("""
+    **Available Intents:**
+    - 💬 **General Chat**
+    - 📊 **SQL Query (Text/Chart/Map)**
+    - 🔮 **Prediction (Forecasting)**
+    """)
 
-st.title("🤖 Agentic BI + RAG")
-st.caption("AI-powered analytics with document-enhanced context")
+st.title("🤖 Agentic BI Test Interface")
 
 # --- HELPER FUNCTIONS ---
 
@@ -193,6 +101,7 @@ def render_message(role, content, view_type="text", steps=None):
                 df = pd.DataFrame(map_data)
                 st.dataframe(df, use_container_width=True)
                 st.info(f"Mapping **{val_key}** by **{prov_key}**")
+                # (Real map rendering requires matching province names to GeoJSON, omitted for simple test)
 
         elif view_type == "error":
             st.error(content)
@@ -207,9 +116,7 @@ for msg in st.session_state.messages:
     )
 
 # 2. Handle Input
-if prompt := st.chat_input(
-    "Ask about data, upload docs for context, or request predictions..."
-):
+if prompt := st.chat_input("Ask a question about your data..."):
     # Add User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -273,7 +180,7 @@ if prompt := st.chat_input(
             final_view = "error"
 
         # Render Final Output in the placeholder
-        message_placeholder.empty()
+        message_placeholder.empty()  # Clear the placeholder to render the full component
         if final_view == "text":
             st.markdown(final_content)
         elif final_view == "chart":
@@ -282,6 +189,7 @@ if prompt := st.chat_input(
             if not df.empty:
                 # Try to plot dynamically
                 cols = df.columns.tolist()
+                # Heuristic: Last column usually value, first column usually category/time
                 if len(cols) >= 2:
                     fig = (
                         px.line(df, x=cols[1], y=cols[-1])
@@ -291,7 +199,7 @@ if prompt := st.chat_input(
                     st.plotly_chart(fig)
                 st.dataframe(df)
         elif final_view == "map":
-            st.subheader("🗺️ Map Data")
+            st.subheader("Map Data")
             st.dataframe(pd.DataFrame(final_content.get("data", [])))
 
         # Save to history
@@ -303,19 +211,3 @@ if prompt := st.chat_input(
                 "steps": collected_steps,
             }
         )
-
-# Footer with quick examples
-with st.expander("💡 Example Queries"):
-    st.markdown("""
-    **With RAG (after uploading docs):**
-    - "What are the coverage limits in the uploaded policy?"
-    - "Summarize the guidelines document"
-
-    **Predictions:**
-    - "Predict faskes growth for 2025"
-    - "Show me penyakit trends for the next 3 years"
-
-    **SQL/Data:**
-    - "Show me top 10 provinces by claims"
-    - "Create a chart of monthly registrations"
-    """)
