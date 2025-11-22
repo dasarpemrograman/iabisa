@@ -25,8 +25,8 @@ export default function ChatbotPanel({ fullscreen, onExitFullscreen }) {
   
   const [messages, setMessages] = useState([
     {
-      role: "system",
-      content: "Halo! Saya Asisten BI Anda. Minta saya untuk memprediksi pertumbuhan faskes atau query database.",
+      role: "assistant",
+      content: "Halo! Saya adalah asisten chatbot serbabisa IABISA. Saya bisa menjawab, membuat visualisasi, atau memprediksi apapun yang anda mau!",
       type: "text",
     },
   ]);
@@ -157,26 +157,7 @@ export default function ChatbotPanel({ fullscreen, onExitFullscreen }) {
 
   return (
     <div className="z-50 flex h-full w-full flex-col border-l border-white/20 bg-white/90 font-sans text-gray-800 shadow-2xl backdrop-blur-xl">
-      {/* Header */}
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-emerald-100 bg-white/80 p-4 backdrop-blur-sm">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-emerald-100 to-teal-50 text-emerald-600 shadow-emerald-200 ring-1 ring-emerald-100">
-            <Bot className="h-6 w-6" />
-          </div>
-          <div>
-            <h2 className="text-sm font-bold text-gray-900">Agentic BI</h2>
-            <p className="text-[10px] font-medium text-emerald-600">AI-Powered Analytics</p>
-          </div>
-        </div>
-        {fullscreen && (
-          <button
-            onClick={onExitFullscreen}
-            className="text-xs text-gray-500 hover:text-emerald-600"
-          >
-            Exit Fullscreen
-          </button>
-        )}
-      </div>
+
 
       {/* Messages Area */}
       <div className="flex-1 space-y-6 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-emerald-200 scrollbar-track-transparent">
