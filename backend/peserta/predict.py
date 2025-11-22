@@ -1,0 +1,448 @@
+"""
+PARTICIPANT FORECASTING - PREDICTION SCRIPT
+===========================================
+Generate multi-step forecasts for healthcare participant data.
+
+Usage:
+    python predict_peserta.py 2019                    # Predict 2019 only
+    python predict_peserta.py 2019 2021               # Predict 2019-2021
+    python predict_peserta.py 2019 --years 3          # Predict 2019-2021 (3 years)
+    python predict_peserta.py 2019 --all              # Predict all datasets
+    python predict_peserta.py 2019 --dataset geo      # Predict geo only
+
+Author: Data Science Team
+Date: November 2025
+"""
+
+import pandas as pd
+import numpy as np
+import warnings
+from pathlib import Path
+import joblib
+import sys
+from datetime import datetime
+import os
+
+warnings.filterwarnings('ignore')
+
+# ============================================================================
+# FEATURE ENGINEERING (SAME AS TRAINING)
+# ============================================================================
+
+def create_panel_features(df, entity_col, time_col='Tahun', target_col='Peserta'):
+    """Same feature engineering as training."""
+    from sklearn.linear_model import LinearRegression
+    
+    df = df.copy()
+    df = df.sort_values([entity_col, time_col])
+    
+    # Get minimum year from the data
+    min_year = df[time_col].min()
+    
+    # Time features
+    df['year_numeric'] = df[time_col] - min_year
+    df['year_squared'] = df['year_numeric'] ** 2
+    
+    # Lag features
+    df['lag_1'] = df.groupby(entity_col)[target_col].shift(1)
+    df['lag_2'] = df.groupby(entity_col)[target_col].shift(2)
+    
+    # Growth rates
+    df['yoy_growth'] = df.groupby(entity_col)[target_col].pct_change()
+    df['yoy_growth_lag1'] = df.groupby(entity_col)['yoy_growth'].shift(1)
+    
+    # Entity statistics
+    entity_stats = df.groupby(entity_col)[target_col].agg(['mean', 'std']).add_suffix('_entity')
+    df = df.merge(entity_stats, left_on=entity_col, right_index=True)
+    
+    # Rolling features
+    df['rolling_mean_2y'] = df.groupby(entity_col)[target_col].rolling(2, min_periods=1).mean().reset_index(0, drop=True)
+    df['rolling_std_2y'] = df.groupby(entity_col)[target_col].rolling(2, min_periods=1).std().reset_index(0, drop=True)
+    
+    # Entity trend
+    def calc_trend(group):
+        if len(group) < 2:
+            return 0
+        X = group['year_numeric'].values.reshape(-1, 1)
+        y = group[target_col].values
+        try:
+            return LinearRegression().fit(X, y).coef_[0]
+        except:
+            return 0
+    
+    trends = df.groupby(entity_col).apply(calc_trend)
+    df['entity_trend'] = df[entity_col].map(trends)
+    
+    # Categorical encoding
+    df['entity_encoded'] = pd.Categorical(df[entity_col]).codes
+    
+    # Fill NaN
+    df['lag_1'] = df['lag_1'].fillna(df['rolling_mean_2y'])
+    df['lag_2'] = df['lag_2'].fillna(df['rolling_mean_2y'])
+    df['yoy_growth_lag1'] = df['yoy_growth_lag1'].fillna(0)
+    df['rolling_std_2y'] = df['rolling_std_2y'].fillna(0)
+    
+    return df
+
+# ============================================================================
+# PREDICTION FUNCTIONS
+# ============================================================================
+
+def predict_xgboost_multistep(model_package, start_year, n_years=1, db_url=None):
+    """
+    Generate multi-step forecasts using XGBoost panel model.
+    Uses recursive prediction where each forecast becomes input for next.
+    
+    Args:
+        model_package: Model package with model, features, and metadata
+        start_year: Starting year for predictions
+        n_years: Number of years to predict
+        db_url: Database URL for fetching training data
+    """
+    print(f"\n{'='*80}")
+    print(f"PREDICTING WITH XGBOOST - {model_package['entity_col'].upper()}")
+    print(f"{'='*80}")
+    
+    # Extract components
+    model = model_package['model']
+    if model is None:
+        raise ValueError("Model object is missing from package. Cannot generate predictions.")
+    
+    features = model_package['features']
+    entity_col = model_package['entity_col']
+    time_col = model_package['time_col']
+    target_col = model_package['target_col']
+    
+    # Load historical data from database
+    if db_url is None:
+        db_url = os.getenv('DATABASE_URL')
+    
+    if not db_url:
+        raise ValueError("DATABASE_URL is required for fetching training data")
+    
+    # Determine table name from model package
+    segment_type = model_package.get('segment_type', 'geo')
+    table_name = segment_type
+    
+    print(f"📥 Fetching training data from database: {table_name}")
+    
+    # Import storage module for database access
+    sys.path.append(str(Path(__file__).parent.parent))
+    from supabase_storage import SupabaseModelStorage
+    
+    storage = SupabaseModelStorage()
+    # Fetch data with year filter to reduce transfer
+    min_year = max(2010, start_year - 10)
+    df_historical = storage.fetch_training_data(table_name, min_year=min_year)
+    
+    print(f"✓ Historical data: {df_historical[time_col].min()}-{df_historical[time_col].max()}")
+    print(f"✓ Predicting: {start_year}-{start_year + n_years - 1}")
+    print(f"✓ Entities: {df_historical[entity_col].nunique()}")
+    
+    # Recursive prediction
+    predictions_all = []
+    df_full = df_historical.copy()
+    
+    for year_offset in range(n_years):
+        year = start_year + year_offset
+        
+        print(f"\n📅 Predicting year: {year}")
+        
+        # Create template for all entities
+        entities = df_historical[entity_col].unique()
+        future_template = pd.DataFrame({
+            entity_col: entities,
+            time_col: year,
+            target_col: np.nan  # Will be predicted
+        })
+        
+        # Combine with historical data for feature engineering
+        df_combined = pd.concat([df_full, future_template], ignore_index=True)
+        df_features = create_panel_features(df_combined, entity_col, time_col, target_col)
+        
+        # Extract features for prediction year
+        df_pred = df_features[df_features[time_col] == year].copy()
+        
+        # Handle any missing features (shouldn't happen, but safety check)
+        for feat in features:
+            if feat not in df_pred.columns:
+                print(f"   ⚠️  Missing feature: {feat}, filling with 0")
+                df_pred[feat] = 0
+        
+        X_pred = df_pred[features]
+        
+        # Predict
+        predictions = model.predict(X_pred)
+        predictions = np.maximum(predictions, 0)  # Ensure non-negative
+        predictions = np.round(predictions).astype(int)  # Convert to integers (discrete count)
+        
+        # Store predictions
+        df_pred[target_col] = predictions
+        
+        predictions_all.append(df_pred[[entity_col, time_col, target_col]])
+        
+        # Add predictions to full dataset for next iteration
+        df_full = pd.concat([df_full, df_pred[[entity_col, time_col, target_col]]], ignore_index=True)
+        
+        print(f"   ✓ Predicted {len(predictions)} entities")
+        print(f"   ✓ Total forecast: {predictions.sum():,.0f} participants")
+        print(f"   ✓ Mean: {predictions.mean():,.0f} | Median: {np.median(predictions):,.0f}")
+    
+    result_df = pd.concat(predictions_all, ignore_index=True)
+    
+    print(f"\n✅ Prediction complete: {len(result_df)} rows")
+    
+    return result_df
+
+
+def predict_prophet_multistep(model_package, start_year, n_years=1):
+    """
+    Generate multi-step forecasts using Prophet models.
+    """
+    print(f"\n{'='*80}")
+    print(f"PREDICTING WITH PROPHET - {model_package['entity_col'].upper()}")
+    print(f"{'='*80}")
+    
+    entity_col = model_package['entity_col']
+    time_col = model_package['time_col']
+    target_col = model_package['target_col']
+    
+    print(f"✓ Predicting: {start_year}-{start_year + n_years - 1}")
+    print(f"✓ Entities: {len(model_package['entities'])}")
+    
+    predictions_all = []
+    
+    for entity in model_package['entities']:
+        model = model_package['models'][entity]['model']
+        
+        # Create future dates
+        future_dates = pd.DataFrame({
+            'ds': pd.date_range(
+                start=f'{start_year}-01-01', 
+                periods=n_years, 
+                freq='YS'
+            )
+        })
+        
+        # Predict
+        forecast = model.predict(future_dates)
+        
+        # Extract predictions with confidence intervals
+        for idx, row in forecast.iterrows():
+            year = row['ds'].year
+            predictions_all.append({
+                entity_col: entity,
+                time_col: year,
+                target_col: int(round(max(0, row['yhat'])))  # Ensure non-negative and integer
+            })
+    
+    result_df = pd.DataFrame(predictions_all)
+    
+    print(f"\n✅ Prediction complete: {len(result_df)} rows")
+    print(f"✓ Total forecast: {result_df[target_col].sum():,.0f} participants")
+    
+    return result_df
+
+
+# ============================================================================
+# HIERARCHICAL RECONCILIATION
+# ============================================================================
+
+def apply_hierarchical_reconciliation(predictions_dict):
+    """
+    Ensure predictions are consistent across hierarchies.
+    All segments/provinces should sum to reasonable totals.
+    """
+    print(f"\n{'='*80}")
+    print("HIERARCHICAL RECONCILIATION")
+    print(f"{'='*80}")
+    
+    # Calculate totals for each dataset
+    for dataset_name, df_pred in predictions_dict.items():
+        years = sorted(df_pred['Tahun'].unique())
+        
+        print(f"\n{dataset_name.upper()}:")
+        for year in years:
+            total = df_pred[df_pred['Tahun'] == year]['Peserta'].sum()
+            print(f"   {year}: {total:,.0f} participants")
+    
+    # Check if totals are roughly consistent across datasets
+    if 'geo' in predictions_dict and 'segmen' in predictions_dict:
+        print("\n📊 Cross-dataset consistency check:")
+        df_geo = predictions_dict['geo']
+        df_segmen = predictions_dict['segmen']
+        
+        years = sorted(set(df_geo['Tahun'].unique()) & set(df_segmen['Tahun'].unique()))
+        
+        for year in years:
+            total_geo = df_geo[df_geo['Tahun'] == year]['Peserta'].sum()
+            total_segmen = df_segmen[df_segmen['Tahun'] == year]['Peserta'].sum()
+            diff_pct = abs(total_geo - total_segmen) / total_geo * 100
+            
+            print(f"   {year}: GEO={total_geo:,.0f} | SEGMEN={total_segmen:,.0f} | Diff={diff_pct:.2f}%")
+    
+    return predictions_dict
+
+
+# ============================================================================
+# SAVE AND EXPORT
+# ============================================================================
+
+def save_predictions(predictions_df, dataset_name, start_year, n_years):
+    """
+    Save predictions to CSV files.
+    """
+    # Save full predictions
+    if n_years == 1:
+        filename = f"{dataset_name}_forecast_{start_year}.csv"
+    else:
+        end_year = start_year + n_years - 1
+        filename = f"{dataset_name}_forecast_{start_year}_{end_year}.csv"
+    
+    filepath = PRED_DIR / filename
+    predictions_df.to_csv(filepath, index=False)
+    
+    print(f"✅ Saved to: {filepath}")
+    
+    return filepath
+
+
+# ============================================================================
+# MAIN PREDICTION PIPELINE
+# ============================================================================
+
+def predict_all_datasets(start_year, n_years=1, datasets=None):
+    """
+    Generate predictions for all or selected datasets.
+    """
+    print("\n" + "="*80)
+    print("PARTICIPANT FORECASTING - PREDICTION PIPELINE")
+    print("="*80)
+    print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Forecast Period: {start_year}-{start_year + n_years - 1}")
+    
+    # Determine which datasets to predict
+    available_datasets = ['geo', 'kelas', 'segmen']
+    if datasets is None:
+        datasets = available_datasets
+    else:
+        datasets = [d for d in datasets if d in available_datasets]
+    
+    print(f"Datasets: {', '.join(datasets)}")
+    
+    predictions = {}
+    
+    for dataset_name in datasets:
+        print(f"\n\n{'#'*80}")
+        print(f"# DATASET: {dataset_name.upper()}")
+        print(f"{'#'*80}")
+        
+        # Load model
+        model_path = MODEL_DIR / f"model_{dataset_name}.pkl"
+        
+        if not model_path.exists():
+            print(f"❌ Model not found: {model_path}")
+            print(f"   Run: python train_model.py")
+            continue
+        
+        model_package = joblib.load(model_path)
+        print(f"✓ Loaded model from: {model_path}")
+        print(f"✓ Model type: {type(model_package.get('model', model_package.get('models'))).__name__}")
+        print(f"✓ Trained: {model_package.get('trained_date', 'Unknown')}")
+        
+        # Predict
+        if 'model' in model_package:  # XGBoost or Random Forest
+            pred_df = predict_xgboost_multistep(model_package, start_year, n_years)
+        elif 'models' in model_package:  # Prophet
+            pred_df = predict_prophet_multistep(model_package, start_year, n_years)
+        else:
+            print(f"❌ Unknown model type")
+            continue
+        
+        predictions[dataset_name] = pred_df
+        
+        # Save predictions
+        save_predictions(pred_df, dataset_name, start_year, n_years)
+        
+        # Display summary
+        print(f"\n📊 PREDICTION SUMMARY - {dataset_name.upper()}:")
+        print(pred_df.groupby('Tahun')['Peserta'].agg(['count', 'sum', 'mean', 'min', 'max']).to_string())
+    
+    # Hierarchical reconciliation
+    if len(predictions) > 1:
+        predictions = apply_hierarchical_reconciliation(predictions)
+    
+    print("\n" + "="*80)
+    print("✅ PREDICTION COMPLETED")
+    print("="*80)
+    print(f"End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\nPrediction files saved in: {PRED_DIR}/")
+    
+    return predictions
+
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+def main():
+    """
+    Parse command line arguments and run predictions.
+    """
+    if len(sys.argv) < 2:
+        print("\nUsage:")
+        print("  python predict_peserta.py <start_year> [options]")
+        print("\nOptions:")
+        print("  <end_year>              End year (e.g., 2021)")
+        print("  --years N               Number of years to forecast")
+        print("  --dataset <name>        Predict specific dataset (geo/kelas/segmen)")
+        print("  --all                   Predict all datasets (default)")
+        print("\nExamples:")
+        print("  python predict_peserta.py 2019")
+        print("  python predict_peserta.py 2019 2021")
+        print("  python predict_peserta.py 2019 --years 5")
+        print("  python predict_peserta.py 2019 --dataset geo")
+        sys.exit(1)
+    
+    # Parse arguments
+    start_year = int(sys.argv[1])
+    n_years = 1
+    datasets = None
+    
+    i = 2
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        
+        if arg == '--years':
+            n_years = int(sys.argv[i + 1])
+            i += 2
+        elif arg == '--dataset':
+            datasets = [sys.argv[i + 1]]
+            i += 2
+        elif arg == '--all':
+            datasets = None
+            i += 1
+        elif arg.isdigit():
+            # End year provided
+            end_year = int(arg)
+            n_years = end_year - start_year + 1
+            i += 1
+        else:
+            print(f"Unknown argument: {arg}")
+            i += 1
+    
+    # Run predictions
+    predictions = predict_all_datasets(start_year, n_years, datasets)
+    
+    print("\n" + "="*80)
+    print("🎉 FORECASTING COMPLETE!")
+    print("="*80)
+    print("\nNext steps:")
+    print(f"1. Review predictions in: {PRED_DIR}/")
+    print("2. Compare with actual data if available")
+    print("3. Analyze forecast accuracy and trends")
+    print("="*80)
+
+
+if __name__ == "__main__":
+    main()

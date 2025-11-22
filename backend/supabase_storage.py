@@ -5,15 +5,23 @@ import urllib.request
 from pathlib import Path
 from typing import Any, List, Optional
 
-import joblib  # Make sure this is installed via pyproject.toml
+import joblib
+import pandas as pd
+import psycopg
+from psycopg_pool import ConnectionPool
 from supabase import Client, create_client
 
 logger = logging.getLogger(__name__)
+
+# Global connection pool
+_connection_pool: Optional[ConnectionPool] = None
 
 class SupabaseModelStorage:
     def __init__(self):
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
+        self.bucket_name = os.getenv("SUPABASE_BUCKET_NAME", "bucket")
+        self.db_url = os.getenv("DATABASE_URL")
 
         if not self.url:
             logger.warning("SUPABASE_URL is missing. Storage operations may fail.")
@@ -27,6 +35,9 @@ class SupabaseModelStorage:
             except Exception as e:
                 logger.error(f"Failed to initialize Supabase client: {e}")
                 self.client = None
+        
+        # Initialize connection pool
+        self._init_connection_pool()
 
     def list_files(self, bucket: str, path: str = "") -> List[str]:
         if not self.client:
@@ -130,4 +141,98 @@ class SupabaseModelStorage:
                     os.remove(target_file)
                 except:
                     pass
-            raise RuntimeError(msg)
+                raise RuntimeError(msg)
+    
+    def _init_connection_pool(self):
+        """Initialize database connection pool."""
+        global _connection_pool
+        
+        if _connection_pool is None and self.db_url:
+            try:
+                _connection_pool = ConnectionPool(
+                    self.db_url,
+                    min_size=2,
+                    max_size=10,
+                    timeout=30
+                )
+                logger.info("Database connection pool initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize connection pool: {e}")
+    
+    def get_database_connection(self):
+        """Get a database connection from the pool."""
+        global _connection_pool
+        
+        if _connection_pool is None:
+            self._init_connection_pool()
+        
+        if _connection_pool:
+            return _connection_pool.connection()
+        else:
+            # Fallback to direct connection
+            if self.db_url:
+                return psycopg.connect(self.db_url)
+            else:
+                raise RuntimeError("DATABASE_URL is not configured")
+    
+    def list_models(self, prefix: str = ""):
+        """List models in Supabase storage with optional prefix filter."""
+        try:
+            files = self.list_files(self.bucket_name, prefix)
+            # Return detailed info for each file
+            models = []
+            for file_path in files:
+                models.append({
+                    "name": os.path.basename(file_path),
+                    "path": file_path,
+                    "metadata": {"size": 0},
+                    "updated_at": ""
+                })
+            return models
+        except Exception as e:
+            logger.error(f"Failed to list models: {e}")
+            return []
+    
+    def fetch_training_data(self, table_name: str, min_year: Optional[int] = None) -> pd.DataFrame:
+        """Fetch training data from Supabase database.
+        
+        Args:
+            table_name: Name of the table (e.g., 'fkrtl', 'klinik_pratama', 'penyakit')
+            min_year: Optional minimum year to fetch (reduces data transfer)
+        
+        Returns:
+            DataFrame with training data (id column included, pandas handles it)
+        """
+        try:
+            with self.get_database_connection() as conn:
+                # Build query with optional year filter
+                if min_year is not None:
+                    # Try common year column names
+                    query = f'SELECT * FROM "{table_name}" WHERE "Tahun" >= {min_year}'
+                else:
+                    query = f'SELECT * FROM "{table_name}"'
+                
+                df = pd.read_sql(query, conn)
+                logger.info(f"Fetched {len(df)} rows from {table_name}")
+                return df
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch training data from {table_name}: {e}")
+            raise RuntimeError(f"Database query failed: {e}")
+
+
+def download_faskes_model(model_name: str, local_path: str) -> Any:
+    """Convenience function to download faskes model from Supabase.
+    
+    Args:
+        model_name: Model filename (e.g., 'model_fkrtl.pkl')
+        local_path: Local path to save the model
+    
+    Returns:
+        Loaded model object
+    """
+    storage = SupabaseModelStorage()
+    bucket_name = storage.bucket_name
+    model_path = f"faskes/{model_name}"
+    
+    return storage.download_model(model_path, bucket_name=bucket_name, local_path=local_path)

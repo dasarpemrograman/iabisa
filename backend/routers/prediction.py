@@ -11,7 +11,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 # --- REAL IMPORTS ---
-from faskes.predict import predict_xgboost_multistep
+from faskes.predict import predict_xgboost_multistep as predict_faskes
+from peserta.predict import predict_xgboost_multistep as predict_peserta
+from penyakit.predict import predict_penyakit_service
 from supabase_storage import SupabaseModelStorage
 
 # --- LOGGING SETUP ---
@@ -97,6 +99,14 @@ class ModelRegistry:
                 # Registration Logic
                 clean_name = cls._infer_dataset_name(filename)
 
+                # Inject metadata for table name lookup
+                if isinstance(model_package, dict):
+                    if folder == "faskes":
+                        model_package.setdefault('dataset_name', clean_name)
+                    elif folder == "peserta":
+                        model_package.setdefault('segment_type', clean_name)
+                    # penyakit models use different structure, handled separately
+
                 # 1. Full Key: "penyakit/kasus_per_service"
                 full_key = f"{folder}/{clean_name}"
                 cls._models[full_key] = model_package
@@ -105,7 +115,7 @@ class ModelRegistry:
                 if clean_name not in cls._models:
                     cls._models[clean_name] = model_package
 
-                logger.info(f"✅ Registered: {full_key}")
+                logger.info(f"✅ Registered: {full_key} (table: {clean_name})")
 
             except Exception as e:
                 logger.error(f"Error registering {file_path}: {e}")
@@ -162,24 +172,90 @@ class PredictionService:
             }
 
         try:
-            # Run Prediction
-            df_pred = predict_xgboost_multistep(model_package, start_year, n_years)
+            # Determine which prediction module to use based on model metadata
+            db_url = os.getenv('DATABASE_URL')
+            
+            if 'dataset_name' in model_package:
+                # Faskes prediction (fkrtl, klinik_pratama, praktek_dokter)
+                logger.info(f"Using faskes prediction module for dataset: {model_package['dataset_name']}")
+                df_pred = predict_faskes(model_package, start_year, n_years, db_url=db_url)
+            elif 'segment_type' in model_package:
+                # Peserta prediction (geo, kelas, segmen)
+                logger.info(f"Using peserta prediction module for segment: {model_package['segment_type']}")
+                df_pred = predict_peserta(model_package, start_year, n_years, db_url=db_url)
+            elif dataset in ['kasus_per_service', 'peserta_per_service', 'penyakit/kasus_per_service', 'penyakit/peserta_per_service']:
+                # Penyakit prediction (different structure)
+                logger.info(f"Using penyakit prediction module for dataset: {dataset}")
+                raise NotImplementedError("Penyakit prediction routing not yet implemented. Use separate endpoint.")
+            else:
+                raise ValueError(f"Cannot determine prediction module for dataset '{dataset}'. Missing metadata.")
+            
+            # Log prediction summary before filtering
+            entity_col = model_package.get("entity_col", "province")
+            target_col = model_package.get("target_col", "prediction")
+            if target_col not in df_pred.columns:
+                target_col = df_pred.columns[-1]
+            
+            # Get time column for year-based analysis
+            time_col = model_package.get("time_col", "year")
+            
+            logger.info(f"Prediction parameters: start_year={start_year}, n_years={n_years}, requested_provinces={provinces}")
+            logger.info(f"DataFrame shape: {df_pred.shape}")
+            logger.info(f"Columns: {df_pred.columns.tolist()}")
+            logger.info(f"Before filtering - Total predictions: {len(df_pred)}, Sum: {df_pred[target_col].sum():,.0f}, Mean: {df_pred[target_col].mean():,.0f}")
+            
+            # Log year breakdown
+            if time_col in df_pred.columns:
+                year_summary = df_pred.groupby(time_col)[target_col].agg(['count', 'sum']).reset_index()
+                logger.info(f"Year breakdown:\n{year_summary.to_string(index=False)}")
+            
+            if len(df_pred) <= 10:
+                logger.info(f"All predicted values: {df_pred[[entity_col, time_col, target_col]].to_dict('records')}")
 
             # Filter by Province
-            entity_col = model_package.get("entity_col", "province")
 
             if provinces and entity_col in df_pred.columns:
+                logger.info(f"Filtering by provinces: {provinces}")
+                logger.info(f"Entity column: {entity_col}")
+                logger.info(f"Available entities (sample): {df_pred[entity_col].unique()[:10].tolist()}")
+                
+                # Create multiple format variations for fuzzy matching
+                province_variations = set()
+                for p in provinces:
+                    province_variations.add(p.upper())  # BALI
+                    province_variations.add(p.lower())  # bali
+                    province_variations.add(p.title())  # Bali
+                    province_variations.add(p.capitalize())  # Bali
+                    
+                # Case-insensitive matching with multiple format support
                 mask = (
                     df_pred[entity_col]
                     .astype(str)
-                    .str.upper()
-                    .isin([p.upper() for p in provinces])
+                    .str.strip()  # Remove whitespace
+                    .apply(lambda x: any(
+                        x.upper() == prov.upper() or  # Exact match case-insensitive
+                        x.lower() == prov.lower() or  # Lowercase match
+                        x == prov  # Exact match
+                        for prov in provinces
+                    ))
                 )
                 df_pred = df_pred[mask]
+                
+                logger.info(f"After filtering: {len(df_pred)} rows remaining")
+                
+                if df_pred.empty:
+                    logger.warning(f"No data found for provinces {provinces}. Available entities: {list(df_pred[entity_col].unique())[:20]}")
+
+            # Filter by requested years only
+            time_col = model_package.get("time_col", "year")
+            if time_col in df_pred.columns:
+                end_year = start_year + n_years - 1
+                year_mask = (df_pred[time_col] >= start_year) & (df_pred[time_col] <= end_year)
+                df_pred = df_pred[year_mask]
+                logger.info(f"After year filtering ({start_year}-{end_year}): {len(df_pred)} rows remaining")
 
             # Format Output
             target_col = model_package.get("target_col", "prediction")
-            time_col = model_package.get("time_col", "year")
 
             if target_col not in df_pred.columns:
                 target_col = df_pred.columns[-1]
@@ -188,6 +264,14 @@ class PredictionService:
             total_facilities = (
                 int(df_pred[target_col].sum()) if not df_pred.empty else 0
             )
+            
+            # Detailed logging of actual prediction values
+            if not df_pred.empty and len(df_pred) <= 5:
+                logger.info(f"Prediction details:")
+                for idx, row in df_pred.iterrows():
+                    logger.info(f"  Row {idx}: {entity_col}={row.get(entity_col)}, {target_col}={row.get(target_col)}, {time_col}={row.get(time_col)}")
+            
+            logger.info(f"Final result: {len(predictions)} records, total={total_facilities}")
 
             return PredictionResult(
                 success=True,
@@ -197,6 +281,8 @@ class PredictionService:
                     "dataset": dataset,
                     "years": n_years,
                     "source": "Supabase (Direct Access)",
+                    "filtered_provinces": provinces if provinces else "all",
+                    "entity_column": entity_col,
                 },
             )
 

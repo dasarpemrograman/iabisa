@@ -28,7 +28,9 @@ logger = logging.getLogger("AgenticBI")
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Use direct connection for SQL queries (admin queries)
+DATABASE_URL = os.getenv("DATABASE_URL_DIRECT")
+# Pooler connection is used by prediction modules via DATABASE_URL env var
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-flash-lite-latest")
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -131,8 +133,8 @@ class DatabaseInspector:
 
                 return "\n".join(report_lines)
         except Exception as exc:
-            logger.exception("Error inspecting schema")
-            return f"Error: {exc}"
+            logger.warning("Error inspecting schema (using fallback): %s", exc)
+            return "DATABASE TYPE: PostgreSQL\nNote: Schema inspection unavailable. Connection to database may be limited."
 
     def execute_query(self, sql: str) -> List[Dict[str, Any]]:
         try:
@@ -211,6 +213,7 @@ class MapDataResponse(BaseModel):
 class PredictionParams(BaseModel):
     dataset: Optional[str] = None
     year: Optional[int] = None
+    n_years: Optional[int] = None
     provinces: Optional[List[str]] = None
 
 
@@ -283,7 +286,25 @@ map_agent = Agent(
 prediction_param_agent = Agent(
     llm_model,
     output_type=PredictionParams,
-    system_prompt="Extract: dataset ('fkrtl', 'klinik_pratama', 'praktek_dokter'), year, provinces.",
+    system_prompt=(
+        "Extract prediction parameters from the user's request.\n"
+        "Available datasets:\n"
+        "- Faskes (Healthcare Facilities): 'fkrtl', 'klinik_pratama', 'praktek_dokter'\n"
+        "- Peserta (Participants): 'geo', 'kelas', 'segmen'\n"
+        "- Penyakit (Diseases): 'kasus_per_service', 'peserta_per_service'\n"
+        "If user asks for 'peserta' generically, default to 'geo'.\n\n"
+        "Extract:\n"
+        "- dataset: exact name from list\n"
+        "- year: starting year (int)\n"
+        "- n_years: number of years to predict (int)\n"
+        "  * If user asks for ONE specific year (e.g., 'predict 2020'), set n_years=1\n"
+        "  * If user asks for multiple years or a range (e.g., '2020-2025'), calculate n_years\n"
+        "  * If unclear, default to 1 for single year prediction\n"
+        "- provinces: list of province names (list of strings)\n"
+        "  * Use proper capitalization: 'Bali', 'DKI Jakarta', 'Jawa Barat'\n"
+        "  * Handle variations: 'bali' -> 'Bali', 'jakarta' -> 'DKI Jakarta'\n"
+        "  * Common provinces: Bali, DKI Jakarta, Jawa Barat, Jawa Tengah, Jawa Timur, Sumatera Utara, etc."
+    ),
 )
 
 # ==============================================================================
@@ -349,16 +370,20 @@ async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
     # Defaults if agent misses them
     start_year = params.year if params.year else datetime.now().year
     dataset = params.dataset if params.dataset else "fkrtl"
+    # Use extracted n_years, default to 1 for single-year questions, or 3 for general trends
+    n_years = params.n_years if params.n_years else 1
+
+    # Log extracted parameters for debugging
+    logger.info(f"Extracted prediction params - dataset: {dataset}, year: {start_year}, n_years: {n_years}, provinces: {params.provinces}")
 
     yield create_event("status", f"🧠 Running Model ({dataset})...", "running")
 
     try:
         # 2. Call the Service directly (No HTTP overhead)
-        # We forecast 3 years ahead by default for better charts
         pred_result = await PredictionService.predict_faskes(
             dataset=dataset,
             start_year=start_year,
-            n_years=3,
+            n_years=n_years,
             provinces=params.provinces,
         )
 
@@ -383,11 +408,15 @@ async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
 
         chart_res = await chart_agent.run(chart_prompt)
 
+        # Build title based on actual prediction range
+        end_year = start_year + n_years - 1
+        year_display = str(start_year) if n_years == 1 else f"{start_year}-{end_year}"
+        
         payload = {
             "component_name": chart_res.output.component_name,
             "react_code": chart_res.output.code,
             "data": ctx.data,
-            "title": f"Prediction: {dataset.replace('_', ' ').title()} ({start_year}-{start_year + 3})",
+            "title": f"Prediction: {dataset.replace('_', ' ').title()} ({year_display})",
         }
 
         # 4. Yield the Chart View
