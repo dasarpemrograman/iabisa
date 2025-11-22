@@ -16,24 +16,60 @@ import { useDebouncedCallback } from "use-debounce";
 import {
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
   CartesianGrid,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from "recharts";
 
 // Internal Component Imports
-// Pastikan menggunakan @/ jika memungkinkan, atau path relative yang konsisten
-import { Grid } from "../app/Grid"; 
+import { Grid } from "../app/Grid";
 import { SortableArea } from "../app/SortableArea";
-import { useDashboard } from "@/context/dashboard-context"; // Gunakan alias @
+import { useDashboard } from "@/context/dashboard-context";
 import DynamicWidget from "./dynamic-chart";
 import BPJSIndonesiaMap from "./map";
 
 // --- THEME SETUP ---
 const dark = createTheme({ palette: { mode: "dark" } });
 const light = createTheme({ palette: { mode: "light" } });
+
+// --- COLORS ---
+const COLORS = ["#10B981", "#34D399", "#6EE7B7", "#065F46", "#A7F3D0"];
+
+// --- DUMMY DATA FOR TEMPLATES ---
+const trendData = [
+  { name: "Jan", value: 4000, prediction: 2400 },
+  { name: "Feb", value: 3000, prediction: 1398 },
+  { name: "Mar", value: 2000, prediction: 9800 },
+  { name: "Apr", value: 2780, prediction: 3908 },
+  { name: "May", value: 1890, prediction: 4800 },
+  { name: "Jun", value: 2390, prediction: 3800 },
+  { name: "Jul", value: 3490, prediction: 4300 },
+];
+
+const categoryData = [
+  { name: "Rawat Inap", value: 400 },
+  { name: "Rawat Jalan", value: 300 },
+  { name: "IGD", value: 300 },
+  { name: "MCU", value: 200 },
+];
+
+const barData = [
+  { name: "Puskesmas", visits: 4000 },
+  { name: "Klinik", visits: 3000 },
+  { name: "RS Tipe C", visits: 2000 },
+  { name: "RS Tipe B", visits: 2780 },
+  { name: "RS Tipe A", visits: 1890 },
+];
 
 // --- WIDGET COMPONENTS ---
 
@@ -45,10 +81,11 @@ function WidgetBase({ children, fill, scroll, ...props }) {
         display: "flex",
         flexDirection: "column",
         overflow: scroll ? "auto" : undefined,
-        pt: fill || scroll ? 0 : 2,
-        pb: fill || scroll ? 0 : 3,
-        px: fill ? 0 : 2,
+        pt: fill || scroll ? 0 : 1,
+        pb: fill || scroll ? 0 : 1,
+        px: fill ? 0 : 1,
         flex: 1,
+        height: "100%",
       }}
     >
       {children}
@@ -56,41 +93,115 @@ function WidgetBase({ children, fill, scroll, ...props }) {
   );
 }
 
-// [WIDGETS PLACEHOLDERS - SAMA SEPERTI SEBELUMNYA]
-function LineChartWidget() {
+// 1. Modern Area Chart (Trend)
+function TrendWidget() {
   return (
     <WidgetBase fill>
-      <Box sx={{ flex: 1, width: "100%", height: "100%", p: 1 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={[]} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-             <CartesianGrid strokeDasharray="3 3" />
-             <XAxis dataKey="time" />
-             <YAxis />
-             <Tooltip />
-             <Line type="monotone" dataKey="value" stroke="#8884d8" />
-          </LineChart>
-        </ResponsiveContainer>
-      </Box>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart
+          data={trendData}
+          margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+        >
+          <defs>
+            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#10B981" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+          <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} dy={5} />
+          <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <Tooltip
+            contentStyle={{ fontSize: "12px", borderRadius: "8px", border: "none", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}
+          />
+          <Area
+            type="monotone"
+            dataKey="value"
+            stroke="#10B981"
+            fillOpacity={1}
+            fill="url(#colorValue)"
+            strokeWidth={2}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
     </WidgetBase>
   );
 }
 
-function BarChartWidget() {
-    return <WidgetBase>Legacy Bar Chart</WidgetBase>;
+// 2. Modern Bar Chart (Facilities)
+function FacilityBarWidget() {
+  return (
+    <WidgetBase fill>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={barData}
+          margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+          barSize={30}
+        >
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+          <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} dy={5} />
+          <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <Tooltip
+            cursor={{ fill: "#f9fafb" }}
+            contentStyle={{ fontSize: "12px", borderRadius: "8px", border: "none", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}
+          />
+          <Bar dataKey="visits" fill="#34D399" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </WidgetBase>
+  );
 }
 
-function TimeWidget() {
-    return <WidgetBase>Legacy Time Widget</WidgetBase>;
+// 3. Modern Pie Chart (Donut)
+function CategoryPieWidget() {
+  return (
+    <WidgetBase fill>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={categoryData}
+            cx="50%"
+            cy="50%"
+            innerRadius={60}
+            outerRadius={80}
+            fill="#8884d8"
+            paddingAngle={5}
+            dataKey="value"
+          >
+            {categoryData.map((entry, index) => (
+              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip
+             contentStyle={{ fontSize: "12px", borderRadius: "8px", border: "none", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}
+          />
+          <Legend
+            verticalAlign="bottom"
+            height={36}
+            iconType="circle"
+            iconSize={8}
+            wrapperStyle={{ fontSize: "11px" }}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </WidgetBase>
+  );
 }
 
+// --- WIDGET REGISTRY ---
+// PENTING: Daftarkan ID widget baru di sini agar tidak muncul error "Unknown Widget"
 const widgets = {
-  linechart: LineChartWidget,
-  barchart: BarChartWidget,
-  time: TimeWidget,
-  map: (props) => <BPJSIndonesiaMap {...props} />,
+  "trend-chart": TrendWidget,
+  "facility-bar": FacilityBarWidget,
+  "category-pie": CategoryPieWidget,
+  "map": (props) => <BPJSIndonesiaMap {...props} />, 
   "dynamic-chart": DynamicWidget,
+  // Legacy mapping (jika diperlukan untuk backward compatibility)
+  "linechart": TrendWidget, 
+  "barchart": FacilityBarWidget,
 };
 
+// --- CONTENT COMPONENT ---
 function Content({ data }) {
   const Widget =
     widgets[data.widget] ??
@@ -104,39 +215,45 @@ function Content({ data }) {
         width: "100%",
         height: "100%",
         bgcolor: "background.paper",
-        borderRadius: 1,
+        borderRadius: "12px",
         overflow: "hidden",
+        boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)",
+        border: "1px solid",
+        borderColor: "#e5e7eb",
       }}
     >
+      {/* Header Title */}
       {data.title && (
         <Box
           sx={{
-            p: 1.5,
-            pb: 1,
-            fontWeight: "bold",
-            fontSize: "0.95rem",
+            px: 2,
+            py: 1.5,
+            fontWeight: "600",
+            fontSize: "0.875rem",
+            color: "#111827",
             borderBottom: "1px solid",
-            borderColor: "divider",
+            borderColor: "#f3f4f6",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            bgcolor: "action.hover",
+            bgcolor: "white",
           }}
         >
           <span>{data.title}</span>
         </Box>
       )}
-      <Box sx={{ flex: 1, minHeight: 0, position: "relative", p: 0 }}>
+
+      {/* Widget Content */}
+      <Box sx={{ flex: 1, minHeight: 0, position: "relative", p: 1, bgcolor: "white" }}>
         <Widget {...data} type={data.widget} />
       </Box>
     </Box>
   );
 }
 
+// --- MAIN EXPORT ---
 export default function DashBoardContent() {
   const [darkTheme, setDarkTheme] = useState(false);
-  
-  // Hook ini sekarang aman karena ada fallback
   const { items, updateGrid, reorderItems } = useDashboard();
   
   const itemIds = useMemo(() => items.map((item) => item.id), [items]);
@@ -160,7 +277,7 @@ export default function DashBoardContent() {
   return (
     <ThemeProvider theme={darkTheme ? dark : light}>
       <CssBaseline />
-      <Box sx={{ py: 2, px: 2, height: "100%" }}>
+      <Box sx={{ py: 3, px: 3, height: "100%", bgcolor: "#F9FAFB" }}>
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -169,6 +286,7 @@ export default function DashBoardContent() {
           onDragEnd={() => setActiveId(null)}
         >
           <SortableContext items={itemIds} strategy={() => {}}>
+            {/* FIX: gap dikembalikan ke 2 (standard) */}
             <Grid columns={12} gap={2}>
               {items.map((props, index) => (
                 <SortableArea

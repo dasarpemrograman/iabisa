@@ -29,25 +29,32 @@ const DashboardContext = createContext<DashboardContextType | null>(null);
 
 const defaultItems: DashboardItem[] = [
   {
-    id: "chart-1",
-    widget: "linechart",
+    id: "trend-1",
+    widget: "trend-chart", // Menggunakan widget Area Chart baru
     bgcolor: "#ffffff",
-    grid: { colSpan: 8, rowSpan: 10 },
-    title: "Traffic Overview",
+    grid: { colSpan: 8, rowSpan: 8 }, // Lebar (2/3 layar)
+    title: "Pertumbuhan Peserta JKN (2024)",
   },
   {
-    id: "chart-2",
-    widget: "barchart",
+    id: "pie-1",
+    widget: "category-pie", // Menggunakan widget Pie Chart baru
     bgcolor: "#ffffff",
-    grid: { colSpan: 4, rowSpan: 10 },
-    title: "User Demographics",
+    grid: { colSpan: 4, rowSpan: 8 }, // Sempit (1/3 layar)
+    title: "Distribusi Layanan Faskes",
   },
   {
-    id: "time-1",
-    widget: "time",
-    bgcolor: "#f3f3f3",
-    grid: { colSpan: 4, rowSpan: 4 },
-    title: "Clock",
+    id: "bar-1",
+    widget: "facility-bar", // Menggunakan widget Bar Chart baru
+    bgcolor: "#ffffff",
+    grid: { colSpan: 6, rowSpan: 8 }, // Setengah layar
+    title: "Kunjungan per Tipe Faskes",
+  },
+  {
+    id: "map-1",
+    widget: "map", // Map Widget
+    bgcolor: "#ffffff",
+    grid: { colSpan: 6, rowSpan: 8 }, // Setengah layar
+    title: "Peta Sebaran Faskes Indonesia",
   },
 ];
 
