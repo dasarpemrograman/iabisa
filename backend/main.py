@@ -12,11 +12,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from psycopg.rows import dict_row
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 
-from routers.prediction import PredictionService
+from automl_service import AutoMLService
 
 # --- CONFIGURATION ---
 logging.basicConfig(
@@ -34,23 +34,14 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    logger.critical("GEMINI_API_KEY is missing.")
-    sys.exit(1)
-if not DATABASE_URL:
-    logger.critical("DATABASE_URL is missing.")
+if not GEMINI_API_KEY or not DATABASE_URL:
+    logger.critical("Missing API Key or Database URL.")
     sys.exit(1)
 
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
+llm_model = GoogleModel(model_name=LLM_MODEL_NAME)
 
-try:
-    llm_model = GoogleModel(model_name=LLM_MODEL_NAME)
-    logger.info("Google Gemini Model initialized: %s", LLM_MODEL_NAME)
-except Exception as exc:
-    logger.critical("Failed to initialize Google Model: %s", exc)
-    sys.exit(1)
-
-app = FastAPI(title="Enterprise Agentic BI API (Composable)", version="2.1.0")
+app = FastAPI(title="Enterprise Agentic BI API (AutoML)", version="3.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,7 +58,8 @@ app.add_middleware(
 
 class DatabaseInspector:
     _TEXTUAL_TYPES = ("TEXT", "CHAR", "VARCHAR", "CHARACTER VARYING", "STRING")
-    _MAX_CATEGORY_VALUES = 25
+    # Increased to ensure we capture all provinces (usually ~34-38 distinct values)
+    _MAX_CATEGORY_VALUES = 100
 
     def __init__(self, db_url: str) -> None:
         self.db_url = db_url
@@ -115,13 +107,15 @@ class DatabaseInspector:
                                 cursor.execute(
                                     f"SELECT COUNT(DISTINCT {display_col}) as cnt FROM {safe_table}"
                                 )
-                                cnt = cursor.fetchone()["cnt"]
+                                cnt_res = cursor.fetchone()
+                                cnt = cnt_res["cnt"] if cnt_res else 0
+
                                 if 0 < cnt < self._MAX_CATEGORY_VALUES:
                                     cursor.execute(
-                                        f"SELECT DISTINCT {display_col} as val FROM {safe_table}"
+                                        f"SELECT DISTINCT {display_col} as val FROM {safe_table} LIMIT {self._MAX_CATEGORY_VALUES}"
                                     )
                                     vals = [str(r["val"]) for r in cursor.fetchall()]
-                                    sample_info = f" (Categories: {vals})"
+                                    sample_info = f" (Values: {vals})"
                             except Exception:
                                 pass
 
@@ -150,11 +144,8 @@ class DatabaseInspector:
 inspector = DatabaseInspector(DATABASE_URL)
 DYNAMIC_SCHEMA_CONTEXT = inspector.get_schema_summary()
 
-# ==============================================================================
-# 2. DATA MODELS & STATE
-# ==============================================================================
 
-
+# --- Pydantic Models ---
 class Message(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
@@ -165,27 +156,30 @@ class ChatRequest(BaseModel):
     history: List[Message] = []
 
 
-# --- WORKFLOW STATE (The "Context" that flows through steps) ---
 class WorkflowContext(BaseModel):
     request: ChatRequest
     intent: Optional[str] = None
     draft_sql: Optional[str] = None
     optimized_sql: Optional[str] = None
-    sql_explanation: Optional[str] = None
     data: Optional[List[Dict[str, Any]]] = None
-    final_response: Optional[Any] = None
     error: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
 
 
-# Response Models
+# Output Models
 class IntentResponse(BaseModel):
     intent: Literal[
         "general_chat", "sql_text_only", "sql_chart", "sql_map", "prediction"
     ]
     reasoning: str
+
+
+class ForecastParams(BaseModel):
+    years_to_predict: int = Field(
+        default=5, description="Number of future years to predict"
+    )
 
 
 class SQLResponse(BaseModel):
@@ -208,86 +202,57 @@ class MapDataResponse(BaseModel):
     value_column: str
 
 
-class PredictionParams(BaseModel):
-    dataset: Optional[str] = None
-    year: Optional[int] = None
-    provinces: Optional[List[str]] = None
-
-
 # ==============================================================================
-# 3. AGENTS
+# 2. AGENTS
 # ==============================================================================
 
 router_agent = Agent(
     llm_model,
     output_type=IntentResponse,
-    system_prompt=(
-        "You are an Intent Classifier. Classify the user request.\n"
-        "CATEGORIES:\n"
-        "1. 'general_chat': Greetings, clarifications.\n"
-        "2. 'sql_text_only': Data questions, lists, simple counts.\n"
-        "3. 'sql_chart': Trends, comparisons, distributions.\n"
-        "4. 'sql_map': Geographic distribution (provinces, maps).\n"
-        "5. 'prediction': Forecasting future values.\n"
-    ),
+    system_prompt="Classify intent: 'prediction' (future/forecast/will happen), 'sql_map' (geographic), 'sql_chart' (trends/comparison), 'sql_text_only' (data lookup), 'general_chat'.",
 )
 
-chat_agent = Agent(
+param_agent = Agent(
     llm_model,
-    system_prompt="You are a helpful BI Assistant. Answer politely. If asked about data, refer to tools.",
+    output_type=ForecastParams,
+    system_prompt="Extract the number of years to predict. If not specified, default to 5.",
 )
 
+# --- OMNIPOTENT SQL AGENT ---
 sql_agent = Agent(
     llm_model,
     output_type=SQLResponse,
     system_prompt=(
-        f"You are a PostgreSQL Expert. SCHEMA:\n{DYNAMIC_SCHEMA_CONTEXT}\n"
-        "Rules: Use valid PostgreSQL. Use exact table/column names from schema (quote if needed)."
+        f"You are an Omniscient PostgreSQL Expert. SCHEMA:\n{DYNAMIC_SCHEMA_CONTEXT}\n"
+        "STRICT RULES:\n"
+        "1. **VALID SYNTAX**: Use valid PostgreSQL.\n"
+        '2. **QUOTING**: Double-quote ALL identifiers (tables and columns) to preserve case (e.g. "Tahun", "Jumlah_Klinik").\n'
+        "3. **CASE-INSENSITIVITY**: Use `ILIKE` for string comparisons (e.g. WHERE \"Provinsi\" ILIKE '%Jawa Barat%').\n"
+        "4. **DATA VALUES**: Check the SCHEMA REPORT for exact values. If searching for 'West Java', look at the schema to see it is 'JAWA BARAT'.\n"
+        "5. **AGGREGATION**: If asked for 'total', use SUM(). If 'number of rows', use COUNT(*).\n"
     ),
 )
 
 bi_agent = Agent(
     llm_model,
     output_type=BIReviewResponse,
-    system_prompt=(
-        f"You are a BI Analyst. Optimize SQL for read-only safety.\nSCHEMA:\n{DYNAMIC_SCHEMA_CONTEXT}"
-    ),
+    system_prompt=f"Optimize SQL. Schema:\n{DYNAMIC_SCHEMA_CONTEXT}",
 )
-
-summarizer_agent = Agent(
-    llm_model,
-    system_prompt="Summarize the data results concisely for the user.",
-)
-
 chart_agent = Agent(
     llm_model,
     output_type=RechartsCodeResponse,
-    system_prompt=(
-        "You are a Data Visualization Expert. "
-        "Generate a JSON configuration for Recharts based on the data schema. "
-        "The JSON must strictly follow this structure: "
-        '{ "type": "linechart" | "barchart" | "areachart", '
-        '  "xAxisKey": "string (column name for X axis)", '
-        '  "series": [{ "dataKey": "string (column name for Y axis)", "label": "string", "color": "hex string" }] '
-        "}. "
-        "Do NOT include the actual data values. Do NOT write 'const data ='. Return ONLY valid JSON."
-    ),
+    system_prompt="Generate Recharts JSON config (type, xAxisKey, series). No data values.",
 )
-
 map_agent = Agent(
     llm_model,
     output_type=MapDataResponse,
-    system_prompt="Identify the 'Province' column and 'Value' column from the data sample.",
+    system_prompt="Identify province and value columns.",
 )
-
-prediction_param_agent = Agent(
-    llm_model,
-    output_type=PredictionParams,
-    system_prompt="Extract: dataset ('fkrtl', 'klinik_pratama', 'praktek_dokter'), year, provinces.",
-)
+chat_agent = Agent(llm_model, system_prompt="Helpful BI Assistant.")
+summarizer_agent = Agent(llm_model, system_prompt="Summarize data results.")
 
 # ==============================================================================
-# 4. COMPOSABLE STEPS
+# 3. STEPS
 # ==============================================================================
 
 
@@ -299,247 +264,174 @@ def json_serial(obj):
     raise TypeError(f"Type {type(obj)} not serializable")
 
 
-def create_event(
-    type_: str,
-    label: str = "",
-    state: str = "running",
-    content: Any = None,
-    view: str = "text",
-) -> str:
-    payload = {
-        "type": type_,
-        "label": label,
-        "state": state,
-        "content": content,
-        "view": view,
-    }
-    return f"data: {json.dumps(payload, default=json_serial)}\n\n"
+def create_event(type_, label="", state="running", content=None, view="text"):
+    return f"data: {json.dumps({'type': type_, 'label': label, 'state': state, 'content': content, 'view': view}, default=json_serial)}\n\n"
 
 
-def format_history(msgs: List[Message]) -> str:
-    return "\n".join([f"{m.role}: {m.content}" for m in msgs[-5:]])
+async def step_identify_intent(ctx: WorkflowContext):
+    yield create_event("status", "🧠 Analyzing Intent...")
+    res = await router_agent.run(
+        f"History: {ctx.request.history}\nInput: {ctx.request.message}"
+    )
+    ctx.intent = res.output.intent
+    yield create_event("log", f"Intent: {ctx.intent}")
 
 
-# --- STEP 1: ROUTING ---
-async def step_identify_intent(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    yield create_event("status", "🧠 Analyzing Intent...", "running")
-    history_text = format_history(ctx.request.history)
-    full_prompt = f"History:\n{history_text}\n\nUser Input: {ctx.request.message}"
-
-    result = await router_agent.run(full_prompt)
-    ctx.intent = result.output.intent
-    yield create_event("log", f"Intent detected: {ctx.intent}", "running")
-
-
-# --- STEP 2: GENERAL CHAT ---
-async def step_general_chat(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    history_text = format_history(ctx.request.history)
-    result = await chat_agent.run(f"{history_text}\nUser: {ctx.request.message}")
-    yield create_event("final", content=result.output, view="text", state="complete")
-
-
-# --- STEP 3: PREDICTION (Full Implementation) ---
-async def step_prediction(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    yield create_event("status", "🔮 Configuring Prediction...", "running")
-
-    # 1. Extract Parameters using the Agent
-    params_result = await prediction_param_agent.run(ctx.request.message)
-    params = params_result.output
-
-    # Defaults if agent misses them
-    start_year = params.year if params.year else datetime.now().year
-    dataset = params.dataset if params.dataset else "fkrtl"
-
-    yield create_event("status", f"🧠 Running Model ({dataset})...", "running")
+async def step_prediction(ctx: WorkflowContext):
+    yield create_event("status", "🔮 Configuring Forecast...")
 
     try:
-        # 2. Call the Service directly (No HTTP overhead)
-        # We forecast 3 years ahead by default for better charts
-        pred_result = await PredictionService.predict_faskes(
-            dataset=dataset,
-            start_year=start_year,
-            n_years=3,
-            provinces=params.provinces,
+        param_res = await param_agent.run(ctx.request.message)
+        n_years = param_res.output.years_to_predict
+    except:
+        n_years = 5
+
+    yield create_event("log", f"Forecasting horizon: {n_years} years.")
+
+    try:
+        ctx.data = await AutoMLService.run_forecast(
+            user_query=ctx.request.message,
+            llm_model=llm_model,
+            inspector=inspector,
+            forecast_years=n_years,
         )
-
-        ctx.data = pred_result.predictions
-
-        if not ctx.data:
-            yield create_event(
-                "final", "No prediction data generated.", view="text", state="complete"
-            )
-            return
-
-        # 3. Generate Visualization using the Chart Agent
-        yield create_event("status", "🎨 Visualizing Forecast...", "running")
-
-        # We give the chart agent a sample so it knows schema (year, prediction, province)
-        chart_prompt = (
-            f"User asked: {ctx.request.message}\n"
-            f"Dataset: {dataset}\n"
-            f"Data Sample (showing columns): {ctx.data[:5]}\n"
-            "Create a LineChart or BarChart. If multiple provinces, use different colors or lines."
-        )
-
-        chart_res = await chart_agent.run(chart_prompt)
-
-        payload = {
-            "component_name": chart_res.output.component_name,
-            "react_code": chart_res.output.code,
-            "data": ctx.data,
-            "title": f"Prediction: {dataset.replace('_', ' ').title()} ({start_year}-{start_year + 3})",
-        }
-
-        # 4. Yield the Chart View
-        yield create_event("final", content=payload, view="chart", state="complete")
-
     except Exception as e:
-        logger.exception("Prediction step failed")
-        ctx.error = str(e)
-        yield create_event("status", "❌ Prediction Error", "error", content=str(e))
+        logger.error(f"AutoML Error: {e}")
+        yield create_event(
+            "final", f"Prediction failed: {str(e)}", view="text", state="error"
+        )
+        return
+
+    if not ctx.data:
+        yield create_event(
+            "final",
+            "No forecast generated (insufficient data).",
+            view="text",
+            state="complete",
+        )
+        return
+
+    yield create_event("status", "🎨 Visualizing...")
+    chart_res = await chart_agent.run(
+        f"User: {ctx.request.message}\nSample: {ctx.data[:3]}\nCreate a LineChart."
+    )
+
+    payload = {
+        "component_name": chart_res.output.component_name,
+        "react_code": chart_res.output.code,
+        "data": ctx.data,
+        "title": f"Forecast (+{n_years} Years)",
+    }
+    yield create_event("final", content=payload, view="chart", state="complete")
 
 
-# --- STEP 4: SQL GENERATION ---
-async def step_draft_sql(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    yield create_event("status", "📝 Drafting Query...", "running")
-    history_text = format_history(ctx.request.history)
-    prompt = f"{history_text}\nUser Question: {ctx.request.message}"
-
-    result = await sql_agent.run(prompt)
-    ctx.draft_sql = result.output.sql_query
-    ctx.sql_explanation = result.output.explanation
+# Standard Steps
+async def step_draft_sql(ctx: WorkflowContext):
+    yield create_event("status", "📝 Drafting SQL...")
+    res = await sql_agent.run(f"Input: {ctx.request.message}")
+    ctx.draft_sql = res.output.sql_query
     yield create_event("artifact", "Draft SQL", content=ctx.draft_sql, view="sql")
 
 
-# --- STEP 5: SQL REVIEW ---
-async def step_optimize_sql(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    yield create_event("status", "🕵️ Optimizing Query...", "running")
-    result = await bi_agent.run(f"Draft SQL: {ctx.draft_sql}")
-
-    if not result.output.is_safe:
-        ctx.error = "Query deemed unsafe."
-        yield create_event("status", "❌ Unsafe Query Detected", "error")
+async def step_optimize_sql(ctx: WorkflowContext):
+    yield create_event("status", "🕵️ Optimizing...")
+    res = await bi_agent.run(f"SQL: {ctx.draft_sql}")
+    if not res.output.is_safe:
+        ctx.error = "Unsafe SQL"
         return
-
-    ctx.optimized_sql = result.output.optimized_sql
+    ctx.optimized_sql = res.output.optimized_sql
     yield create_event(
         "artifact", "Optimized SQL", content=ctx.optimized_sql, view="sql"
     )
 
 
-# --- STEP 6: DATA FETCH ---
-async def step_execute_query(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    yield create_event("status", "🗄️ Fetching Data...", "running")
-
+async def step_execute_query(ctx: WorkflowContext):
+    yield create_event("status", "🗄️ Fetching Data...")
     if not ctx.optimized_sql:
         return
+    ctx.data = inspector.execute_query(ctx.optimized_sql)
+    if isinstance(ctx.data, list) and ctx.data and "error" in ctx.data[0]:
+        ctx.error = ctx.data[0]["error"]
+    yield create_event("log", f"Rows: {len(ctx.data)}")
 
-    data = inspector.execute_query(ctx.optimized_sql)
 
-    # Check for DB errors
-    if isinstance(data, list) and len(data) > 0 and "error" in data[0]:
-        ctx.error = data[0]["error"]
-        yield create_event("status", "⚠️ Database Error", "error", content=ctx.error)
+async def step_format_response(ctx: WorkflowContext):
+    if ctx.error:
+        yield create_event("status", "❌ Error", "error", content=ctx.error)
         return
 
-    ctx.data = data
-    yield create_event("log", f"Fetched {len(data)} rows.", "running")
-
-
-# --- STEP 7: VISUALIZATION / FORMATTING ---
-async def step_format_response(ctx: WorkflowContext) -> AsyncGenerator[str, None]:
-    if ctx.error or not ctx.data:
-        if not ctx.error:
-            yield create_event("final", "No data found.", view="text", state="complete")
-        return
-
-    # A. TEXT SUMMARY
-    if ctx.intent == "sql_text_only":
-        yield create_event("status", "✍️ Summarizing...", "running")
-        summary = await summarizer_agent.run(
-            f"Question: {ctx.request.message}\nData: {ctx.data}"
-        )
+    if not ctx.data:
+        # Only show "No data" if it's truly empty, not just 0 rows
         yield create_event(
-            "final", content=summary.output, view="text", state="complete"
+            "final", "No matching data found.", view="text", state="complete"
         )
+        return
 
-    # B. MAP VISUALIZATION
-    elif ctx.intent == "sql_map":
-        yield create_event("status", "🗺️ Formatting Map...", "running")
-        # Helper agent to find columns
-        map_info = await map_agent.run(f"Data Sample: {ctx.data[:5]}")
-
-        payload = {
-            "province_key": map_info.output.province_column,
-            "value_key": map_info.output.value_column,
-            "data": ctx.data,
-        }
-        yield create_event("final", content=payload, view="map", state="complete")
-
-    # C. CHART VISUALIZATION
-    elif ctx.intent == "sql_chart":
-        yield create_event("status", "🎨 Designing Chart...", "running")
-        chart_res = await chart_agent.run(
-            f"Question: {ctx.request.message}\nData Sample: {ctx.data[:10]}"
+    if ctx.intent == "sql_chart":
+        res = await chart_agent.run(
+            f"Input: {ctx.request.message}\nSample: {ctx.data[:5]}"
         )
-
         payload = {
-            "component_name": chart_res.output.component_name,
-            "react_code": chart_res.output.code,
+            "component_name": res.output.component_name,
+            "react_code": res.output.code,
             "data": ctx.data,
         }
         yield create_event("final", content=payload, view="chart", state="complete")
+    elif ctx.intent == "sql_map":
+        res = await map_agent.run(f"Sample: {ctx.data[:5]}")
+        payload = {
+            "province_key": res.output.province_column,
+            "value_key": res.output.value_column,
+            "data": ctx.data,
+        }
+        yield create_event("final", content=payload, view="map", state="complete")
+    else:
+        res = await summarizer_agent.run(
+            f"Input: {ctx.request.message}\nData: {ctx.data}"
+        )
+        yield create_event("final", content=res.output, view="text", state="complete")
+
+
+async def step_general_chat(ctx: WorkflowContext):
+    res = await chat_agent.run(
+        f"History: {ctx.request.history}\nUser: {ctx.request.message}"
+    )
+    yield create_event("final", content=res.output, view="text", state="complete")
 
 
 # ==============================================================================
-# 5. ORCHESTRATOR
+# 4. PIPELINE
 # ==============================================================================
 
 
 async def run_pipeline(request: ChatRequest):
-    """
-    The Orchestrator:
-    1. Creates Context
-    2. Identifies Intent
-    3. Composes the correct list of steps (Recipe)
-    4. Executes them sequentially
-    """
     ctx = WorkflowContext(request=request)
-
     try:
-        # 1. Identify Intent
-        async for event in step_identify_intent(ctx):
-            yield event
+        async for e in step_identify_intent(ctx):
+            yield e
 
-        # 2. Select Recipe based on Intent
-        pipeline_steps = []
-
+        steps = []
         if ctx.intent == "general_chat":
-            pipeline_steps = [step_general_chat]
-
+            steps = [step_general_chat]
         elif ctx.intent == "prediction":
-            pipeline_steps = [step_prediction]
-
+            steps = [step_prediction]
         elif ctx.intent in ["sql_text_only", "sql_chart", "sql_map"]:
-            # The "Standard BI Pipeline"
-            pipeline_steps = [
+            steps = [
                 step_draft_sql,
                 step_optimize_sql,
                 step_execute_query,
                 step_format_response,
             ]
 
-        # 3. Execute Recipe
-        for step_fn in pipeline_steps:
+        for s in steps:
             if ctx.error:
-                break  # Stop pipeline on error
-
-            async for event in step_fn(ctx):
-                yield event
+                break
+            async for e in s(ctx):
+                yield e
 
     except Exception as e:
-        logger.exception("Pipeline crashed")
-        yield create_event("status", "❌ System Error", "error", content=str(e))
+        logger.exception("Crash")
+        yield create_event("status", "❌ Error", "error", content=str(e))
 
 
 @app.post("/generate-chart-stream")

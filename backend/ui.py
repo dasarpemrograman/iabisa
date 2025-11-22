@@ -3,211 +3,151 @@ import os
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Agentic BI - Dev Console", layout="wide")
+st.set_page_config(page_title="Agentic BI Test Console", layout="wide")
+API_URL = os.getenv("API_URL", "http://localhost:8000/generate-chart-stream")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Sidebar settings
 with st.sidebar:
-    st.header("🔌 Connection")
-    api_url = st.text_input("API URL", "http://localhost:8000")
-
-    if st.button("Clear Chat"):
+    st.title("🎛️ Testing Console")
+    if st.button("Clear History"):
         st.session_state.messages = []
         st.rerun()
 
-    st.markdown("---")
-    st.markdown("### 🛠 Testing Guide")
-    st.markdown("""
-    **Available Intents:**
-    - 💬 **General Chat**
-    - 📊 **SQL Query (Text/Chart/Map)**
-    - 🔮 **Prediction (Forecasting)**
-    """)
+def render_chart(payload):
+    try:
+        data = payload.get("data", [])
+        if not data:
+            st.warning("No data to visualize")
+            return
 
-st.title("🤖 Agentic BI Test Interface")
+        df = pd.DataFrame(data)
+        title = payload.get("title", "Data Visualization")
 
-# --- HELPER FUNCTIONS ---
+        # Column Classification
+        cols = df.columns.tolist()
+        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+        categorical_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
 
+        # 1. IDENTIFY TIME COLUMN
+        time_keywords = ["year", "date", "time", "tahun", "thn", "waktu", "time_col"]
+        time_col = next(
+            (c for c in cols if any(x in c.lower() for x in time_keywords)), None
+        )
 
-def parse_stream_line(line):
-    """Parses a Server-Sent Event (SSE) line."""
-    if line:
-        decoded_line = line.decode("utf-8").strip()
-        if decoded_line.startswith("data: "):
-            try:
-                return json.loads(decoded_line[6:])
-            except json.JSONDecodeError:
-                return None
-    return None
+        # 2. FORECAST / LINE CHART
+        if time_col and len(numeric_cols) > 0:
+            # CRITICAL FIX: Exclude Time Column from Y-Axis candidates
+            y_candidates = [c for c in numeric_cols if c != time_col]
 
+            if not y_candidates:
+                st.warning(f"Y-Axis Error. Numeric: {numeric_cols}, Time: {time_col}")
+                st.dataframe(df)
+                return
 
-def render_message(role, content, view_type="text", steps=None):
-    """Renders a message block with specific logic for charts/maps."""
-    with st.chat_message(role):
-        # Render intermediate steps if they exist (Accordion style)
-        if steps:
-            with st.status("⚙️ Agent Workflow", expanded=False):
-                for step in steps:
-                    st.write(f"**{step['label']}**")
-                    if step["content"]:
-                        if step.get("view") == "sql":
-                            st.code(step["content"], language="sql")
-                        elif step.get("view") == "error":
-                            st.error(step["content"])
-                        else:
-                            st.caption(str(step["content"]))
+            y_col = y_candidates[0]
+            entity_col = categorical_cols[0] if categorical_cols else None
 
-        # Render Final Content
-        if view_type == "text":
-            st.markdown(content)
+            fig = px.line(
+                df, x=time_col, y=y_col, color=entity_col, title=title, markers=True
+            )
 
-        elif view_type == "chart":
-            # The backend sends Recharts code/config. For Python UI, we plot the raw data using Plotly.
-            st.subheader(content.get("title", "Data Visualization"))
-            chart_data = content.get("data", [])
-            if chart_data:
-                df = pd.DataFrame(chart_data)
-                st.dataframe(df.head(), use_container_width=True)
-
-                # Auto-detect numeric columns for plotting
-                num_cols = df.select_dtypes(include=["number"]).columns
-                cat_cols = df.select_dtypes(include=["object", "string"]).columns
-
-                if len(num_cols) > 0 and len(cat_cols) > 0:
-                    # Simple heuristic for plotting
-                    fig = px.bar(
-                        df, x=cat_cols[0], y=num_cols[0], title="Generated Chart"
+            # Forecast Divider
+            if "type" in df.columns:
+                history_df = df[df["type"] == "history"]
+                if not history_df.empty:
+                    fig.add_vline(
+                        x=history_df[time_col].max(),
+                        line_dash="dash",
+                        annotation_text="Forecast",
                     )
-                    st.plotly_chart(fig, use_container_width=True)
 
-                    with st.expander("See Raw React Code"):
-                        st.code(content.get("react_code", ""), language="javascript")
-                else:
-                    st.info("Data received, but could not auto-plot. See table above.")
+            st.plotly_chart(fig, use_container_width=True)
 
-        elif view_type == "map":
-            st.subheader("🗺️ Geographic Distribution")
-            map_data = content.get("data", [])
-            val_key = content.get("value_key")
-            prov_key = content.get("province_key")
+        # 3. BAR CHART
+        elif len(categorical_cols) > 0 and len(numeric_cols) > 0:
+            fig = px.bar(
+                df,
+                x=categorical_cols[0],
+                y=numeric_cols[0],
+                title=title,
+                color=categorical_cols[0],
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            if map_data:
-                df = pd.DataFrame(map_data)
-                st.dataframe(df, use_container_width=True)
-                st.info(f"Mapping **{val_key}** by **{prov_key}**")
-                # (Real map rendering requires matching province names to GeoJSON, omitted for simple test)
+        else:
+            st.dataframe(df)
 
-        elif view_type == "error":
-            st.error(content)
+    except Exception as e:
+        st.error(f"Chart Error: {e}")
 
 
-# --- CHAT LOGIC ---
+st.title("🤖 Agentic BI: Unified Test UI")
 
-# 1. Display History
 for msg in st.session_state.messages:
-    render_message(
-        msg["role"], msg["content"], msg.get("view", "text"), msg.get("steps")
-    )
+    with st.chat_message(msg["role"]):
+        if msg.get("type") == "text":
+            st.markdown(msg["content"])
+        elif msg.get("type") == "chart":
+            render_chart(msg["content"])
+        elif msg.get("type") == "sql":
+            st.code(msg["content"], language="sql")
 
-# 2. Handle Input
-if prompt := st.chat_input("Ask a question about your data..."):
-    # Add User Message
-    st.session_state.messages.append({"role": "user", "content": prompt})
+if prompt := st.chat_input("Predict trends, ask data..."):
+    st.session_state.messages.append(
+        {"role": "user", "type": "text", "content": prompt}
+    )
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Stream Response
     with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        step_container = st.status("🤔 Processing...", expanded=True)
+        status_container = st.status("Thinking...", expanded=True)
+        response_placeholder = st.empty()
 
-        full_history = [
+        api_history = [
             {"role": m["role"], "content": str(m["content"])}
             for m in st.session_state.messages
-            if isinstance(m["content"], str)
         ]
-        payload = {"message": prompt, "history": full_history}
-
-        collected_steps = []
-        final_content = ""
-        final_view = "text"
 
         try:
             with requests.post(
-                f"{api_url}/generate-chart-stream", json=payload, stream=True
+                API_URL, json={"message": prompt, "history": api_history}, stream=True
             ) as r:
                 for line in r.iter_lines():
-                    data = parse_stream_line(line)
-                    if not data:
-                        continue
+                    if line:
+                        data = json.loads(line.decode("utf-8")[6:])
+                        e_type, content = data.get("type"), data.get("content")
 
-                    event_type = data.get("type")
-                    label = data.get("label")
-                    content = data.get("content")
-                    view = data.get("view")
-
-                    # Handle Status Updates (Intermediate Steps)
-                    if event_type in ["status", "log", "artifact"]:
-                        step_container.write(f"**{label}**")
-                        collected_steps.append(data)
-
-                        if view == "sql":
-                            step_container.code(content, language="sql")
-                        if event_type == "status" and data.get("state") == "error":
-                            step_container.update(
-                                label="Error", state="error", expanded=True
+                        if e_type == "status":
+                            status_container.update(
+                                label=data.get("label"), state="running"
                             )
-                            st.error(content)
-
-                    # Handle Final Result
-                    elif event_type == "final":
-                        final_content = content
-                        final_view = view
-                        step_container.update(
-                            label="Complete!", state="complete", expanded=False
-                        )
+                        elif e_type == "log":
+                            status_container.write(f"🧠 {content}")
+                        elif e_type == "artifact":
+                            status_container.code(content, language="sql")
+                            st.session_state.messages.append(
+                                {"role": "assistant", "type": "sql", "content": content}
+                            )
+                        elif e_type == "final":
+                            status_container.update(
+                                label="Done", state="complete", expanded=False
+                            )
+                            view = data.get("view")
+                            if view == "text":
+                                response_placeholder.markdown(content)
+                            elif view == "chart":
+                                render_chart(content)
+                            st.session_state.messages.append(
+                                {"role": "assistant", "type": view, "content": content}
+                            )
+                            st.session_state.messages.append({"role": "assistant", "type": view, "content": content})
 
         except Exception as e:
-            step_container.update(label="Connection Error", state="error")
-            st.error(f"Could not connect to backend: {e}")
-            final_content = "Error connecting to API."
-            final_view = "error"
-
-        # Render Final Output in the placeholder
-        message_placeholder.empty()  # Clear the placeholder to render the full component
-        if final_view == "text":
-            st.markdown(final_content)
-        elif final_view == "chart":
-            st.subheader(final_content.get("title", "Chart Result"))
-            df = pd.DataFrame(final_content.get("data", []))
-            if not df.empty:
-                # Try to plot dynamically
-                cols = df.columns.tolist()
-                # Heuristic: Last column usually value, first column usually category/time
-                if len(cols) >= 2:
-                    fig = (
-                        px.line(df, x=cols[1], y=cols[-1])
-                        if "year" in cols[1].lower()
-                        else px.bar(df, x=cols[0], y=cols[-1])
-                    )
-                    st.plotly_chart(fig)
-                st.dataframe(df)
-        elif final_view == "map":
-            st.subheader("Map Data")
-            st.dataframe(pd.DataFrame(final_content.get("data", [])))
-
-        # Save to history
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": final_content,
-                "view": final_view,
-                "steps": collected_steps,
-            }
-        )
+            st.error(f"Error: {e}")
