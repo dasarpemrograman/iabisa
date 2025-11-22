@@ -32,28 +32,28 @@ const defaultItems: DashboardItem[] = [
     id: "trend-1",
     widget: "trend-chart", // Menggunakan widget Area Chart baru
     bgcolor: "#ffffff",
-    grid: { colSpan: 8, rowSpan: 8 }, // Lebar (2/3 layar)
+    grid: { colSpan: 8, rowSpan: 6 }, // Lebar (2/3 layar)
     title: "Pertumbuhan Peserta JKN (2024)",
   },
   {
     id: "pie-1",
     widget: "category-pie", // Menggunakan widget Pie Chart baru
     bgcolor: "#ffffff",
-    grid: { colSpan: 4, rowSpan: 8 }, // Sempit (1/3 layar)
+    grid: { colSpan: 4, rowSpan: 6 }, // Sempit (1/3 layar)
     title: "Distribusi Layanan Faskes",
   },
   {
     id: "bar-1",
     widget: "facility-bar", // Menggunakan widget Bar Chart baru
     bgcolor: "#ffffff",
-    grid: { colSpan: 6, rowSpan: 8 }, // Setengah layar
+    grid: { colSpan: 6, rowSpan: 6 }, // Setengah layar
     title: "Kunjungan per Tipe Faskes",
   },
   {
     id: "map-1",
     widget: "map", // Map Widget
     bgcolor: "#ffffff",
-    grid: { colSpan: 6, rowSpan: 8 }, // Setengah layar
+    grid: { colSpan: 6, rowSpan: 6 }, // Setengah layar
     title: "Peta Sebaran Faskes Indonesia",
   },
 ];
