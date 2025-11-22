@@ -1,0 +1,15 @@
+# Ignore uploaded documents
+documents/*
+!documents/.gitkeep
+
+# Ignore ChromaDB storage
+chroma/*
+!chroma/.gitkeep
+
+# Ignore model cache
+*.bin
+*.safetensors
+models/
+
+# Keep directory structure
+!.gitkeep
