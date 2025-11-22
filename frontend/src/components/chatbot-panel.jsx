@@ -10,27 +10,27 @@ import {
   BarChart2,
   AlertCircle,
   PlusCircle,
-  Map as MapIcon, // Import icon Map untuk UI
+  Map as MapIcon,
 } from "lucide-react";
 import { useDashboard } from "@/context/dashboard-context";
 import ReactMarkdown from "react-markdown";
 import DynamicWidget from "./dynamic-chart";
-import BPJSIndonesiaMap from "./map"; // <--- ADDED: Import component Map
+import BPJSIndonesiaMap from "./map";
 
-export default function ChatbotPanel() {
+export default function ChatbotPanel({ fullscreen, onExitFullscreen }) {
   const { addItem } = useDashboard();
-  const [input, setInput] = useState("");
+  
+  // GANTI useState input dengan useRef sesuai permintaan
+  const inputRef = useRef(null);
+  
   const [messages, setMessages] = useState([
     {
       role: "system",
-      content:
-        "Hello! I am your BI Assistant. Ask me to predict facility growth or query the database.",
+      content: "Halo! Saya Asisten BI Anda. Minta saya untuk memprediksi pertumbuhan faskes atau query database.",
       type: "text",
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
-
-  // Ref initialized with null for .jsx compatibility
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -38,10 +38,14 @@ export default function ChatbotPanel() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    // Ambil value langsung dari ref
+    const userMessage = inputRef.current?.value;
 
-    const userMessage = input;
-    setInput("");
+    if (!userMessage || !userMessage.trim() || isLoading) return;
+
+    // Kosongkan input via ref (tanpa re-render)
+    if (inputRef.current) inputRef.current.value = "";
+
     setMessages((prev) => [
       ...prev,
       { role: "user", content: userMessage, type: "text" },
@@ -52,8 +56,7 @@ export default function ChatbotPanel() {
       .filter((m) => m.role !== "system")
       .map((m) => ({
         role: m.role,
-        content:
-          typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
       }));
 
     try {
@@ -114,12 +117,9 @@ export default function ChatbotPanel() {
       const newMsgs = [...prev];
       const lastMsg = newMsgs[newMsgs.length - 1];
 
-      // 1. Handle Intermediate Steps
       if (["status", "log", "artifact"].includes(event.type)) {
         const steps = lastMsg.steps || [];
-        const existingStepIndex = steps.findIndex(
-          (s) => s.label === event.label,
-        );
+        const existingStepIndex = steps.findIndex((s) => s.label === event.label);
 
         const newStep = {
           label: event.label,
@@ -133,14 +133,11 @@ export default function ChatbotPanel() {
         lastMsg.steps = steps;
       }
 
-      // 2. Handle Final Response
       if (event.type === "final") {
         const isChart = event.view === "chart" || event.view === "map";
-        lastMsg.type = isChart ? event.view : "text"; // 'chart' or 'map'
+        lastMsg.type = isChart ? event.view : "text";
         lastMsg.content = event.content;
-        lastMsg.title = isChart
-          ? event.content.title || "AI Insight"
-          : undefined;
+        lastMsg.title = isChart ? event.content.title || "AI Insight" : undefined;
 
         if (lastMsg.steps) {
           lastMsg.steps = lastMsg.steps.map((step) => ({
@@ -159,154 +156,119 @@ export default function ChatbotPanel() {
   };
 
   return (
-    <div className="z-50 flex h-full w-full max-w-md flex-col border-l border-gray-200 bg-white font-sans text-gray-800 shadow-xl">
+    <div className="z-50 flex h-full w-full flex-col border-l border-white/20 bg-white/90 font-sans text-gray-800 shadow-2xl backdrop-blur-xl">
       {/* Header */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-gray-100 bg-white/80 p-4 backdrop-blur-sm">
-        <div className="rounded-lg bg-blue-100 p-1.5">
-          <Bot className="h-5 w-5 text-blue-600" />
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-emerald-100 bg-white/80 p-4 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-emerald-100 to-teal-50 text-emerald-600 shadow-emerald-200 ring-1 ring-emerald-100">
+            <Bot className="h-6 w-6" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-gray-900">Agentic BI</h2>
+            <p className="text-[10px] font-medium text-emerald-600">AI-Powered Analytics</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-sm font-bold text-gray-900">Agentic BI</h2>
-          <p className="text-[10px] text-gray-500">AI-Powered Analytics</p>
-        </div>
+        {fullscreen && (
+          <button
+            onClick={onExitFullscreen}
+            className="text-xs text-gray-500 hover:text-emerald-600"
+          >
+            Exit Fullscreen
+          </button>
+        )}
       </div>
 
       {/* Messages Area */}
-      <div className="scrollbar-thin scrollbar-thumb-gray-300 flex-1 space-y-6 overflow-y-auto p-4">
+      <div className="flex-1 space-y-6 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-emerald-200 scrollbar-track-transparent">
         {messages.map((msg, idx) => (
-          <div
-            key={idx}
-            className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
-          >
-            {/* Avatar */}
+          <div key={idx} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
             <div
-              className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full shadow-sm ${
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full shadow-md transition-transform duration-300 hover:scale-105 ${
                 msg.role === "user"
-                  ? "bg-blue-600 text-white"
+                  ? "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-500/30"
                   : msg.role === "system"
-                  ? "bg-red-50 text-red-600"
-                  : "border border-gray-200 bg-white text-indigo-600"
+                  ? "bg-rose-50 text-rose-500"
+                  : "border border-emerald-100 bg-white text-emerald-600"
               }`}
             >
-              {msg.role === "user" ? (
-                <User size={14} />
-              ) : msg.role === "system" ? (
-                <AlertCircle size={14} />
-              ) : (
-                <Sparkles size={14} />
-              )}
+              {msg.role === "user" ? <User size={16} /> : msg.role === "system" ? <AlertCircle size={16} /> : <Sparkles size={16} />}
             </div>
 
-            {/* Bubble */}
-            <div
-              className={`flex max-w-[90%] flex-col space-y-1 ${msg.role === "user" ? "items-end" : "items-start"}`}
-            >
-              {/* Workflow Steps */}
+            <div className={`flex max-w-[90%] flex-col space-y-1 ${msg.role === "user" ? "items-end" : "items-start"}`}>
               {msg.steps && msg.steps.length > 0 && (
-                <div className="mb-2 w-full space-y-1">
+                <div className="mb-2 w-full space-y-1.5">
                   {msg.steps.map((step, sIdx) => (
-                    <div
-                      key={sIdx}
-                      className="flex items-center gap-2 rounded border border-gray-100 bg-gray-50 px-2 py-1.5 text-[10px] text-gray-500"
-                    >
-                      {step.status === "running" && (
-                        <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
-                      )}
-                      {step.status === "complete" && (
-                        <div className="h-2 w-2 rounded-full bg-green-500" />
-                      )}
-                      {step.status === "error" && (
-                        <div className="h-2 w-2 rounded-full bg-red-500" />
-                      )}
-                      <span className="truncate font-medium">{step.label}</span>
+                    <div key={sIdx} className="flex items-center gap-2 rounded-lg border border-emerald-50 bg-emerald-50/50 px-3 py-1.5 text-[10px] text-emerald-700 backdrop-blur-sm">
+                      {step.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />}
+                      {step.status === "complete" && <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />}
+                      {step.status === "error" && <div className="h-2 w-2 rounded-full bg-rose-500" />}
+                      <span className="truncate font-semibold tracking-wide">{step.label}</span>
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* Main Content */}
               <div
-                className={`w-full rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+                className={`w-full rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm ${
                   msg.role === "user"
-                    ? "rounded-br-none bg-blue-600 text-white"
+                    ? "rounded-br-none bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-500/25"
                     : msg.type === "error"
-                    ? "border border-red-100 bg-red-50 text-red-800"
-                    : "rounded-bl-none border border-gray-200 bg-gray-100 text-gray-800"
+                    ? "border border-rose-100 bg-rose-50 text-rose-800"
+                    : "rounded-bl-none border border-gray-100 bg-white text-gray-700 shadow-gray-100"
                 }`}
               >
                 {msg.type === "chart" || msg.type === "map" ? (
                   <div className="flex w-full min-w-[280px] flex-col gap-3">
-                    <div className="mb-1 flex items-center justify-between border-b border-gray-200 pb-2">
-                      <div className="flex items-center gap-2 font-semibold text-gray-700">
-                        {/* Icon Logic */}
-                        {msg.type === "map" ? (
-                            <MapIcon className="h-4 w-4 text-blue-600" />
-                        ) : (
-                            <BarChart2 className="h-4 w-4 text-blue-600" />
-                        )}
-                        <span className="text-xs">
-                          {msg.title || "Generated Insight"}
-                        </span>
+                    <div className="mb-1 flex items-center justify-between border-b border-gray-100 pb-2">
+                      <div className="flex items-center gap-2 font-bold text-emerald-800">
+                        {msg.type === "map" ? <MapIcon className="h-4 w-4 text-emerald-600" /> : <BarChart2 className="h-4 w-4 text-emerald-600" />}
+                        <span className="text-xs">{msg.title || "Generated Insight"}</span>
                       </div>
                       <button
                         onClick={() => handleManualAdd(msg)}
-                        className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[10px] shadow-sm transition-all hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
+                        className="flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm"
                       >
                         <PlusCircle size={12} />
                         Add to Dashboard
                       </button>
                     </div>
-                    <div className="h-48 w-full rounded border border-gray-200 bg-white p-2 relative overflow-hidden">
-                      {/* FIX: Render Map if type is map, otherwise DynamicWidget */}
-                      {msg.type === "map" ? (
-                        <BPJSIndonesiaMap data={msg.content} />
-                      ) : (
-                        <DynamicWidget data={msg.content} />
-                      )}
+                    <div className="relative h-48 w-full overflow-hidden rounded-lg border border-gray-100 bg-white p-2 shadow-inner">
+                      {msg.type === "map" ? <BPJSIndonesiaMap data={msg.content} /> : <DynamicWidget data={msg.content} />}
                     </div>
                   </div>
                 ) : (
-                  <div className="prose prose-stone prose-sm max-w-none">
-                    <ReactMarkdown>
-                      {typeof msg.content === "string" ? msg.content : ""}
-                    </ReactMarkdown>
+                  <div className="prose prose-stone prose-sm max-w-none prose-p:leading-relaxed prose-strong:text-inherit">
+                    <ReactMarkdown>{typeof msg.content === "string" ? msg.content : ""}</ReactMarkdown>
                   </div>
                 )}
               </div>
             </div>
           </div>
         ))}
-        
-        {/* Callback Ref to fix TS/Runtime error */}
         <div ref={(el) => { messagesEndRef.current = el; }} />
       </div>
 
-      {/* Input Area */}
-      <div className="border-t border-gray-100 bg-white p-4">
-        <div className="relative flex items-center rounded-xl border border-gray-200 bg-gray-50 shadow-inner transition-all focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500">
+      {/* Input Area - UNCONTROLLED COMPONENT (useRef) */}
+      <div className="border-t border-gray-100 bg-white/80 p-4 backdrop-blur-md">
+        <div className="relative flex items-center rounded-xl border border-gray-200 bg-white shadow-sm focus-within:border-emerald-400 focus-within:ring-4 focus-within:ring-emerald-100 transition-all duration-300">
           <input
+            ref={inputRef}
             type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            placeholder="Ask for a prediction..."
-            className="flex-1 border-none bg-transparent px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:ring-0"
+            placeholder="Tanya prediksi pertumbuhan faskes..."
+            className="flex-1 border-none bg-transparent px-4 py-3.5 text-sm text-gray-800 placeholder-gray-400 focus:ring-0"
             disabled={isLoading}
           />
           <button
             onClick={handleSend}
-            disabled={isLoading || !input.trim()}
-            className={`mr-2 rounded-lg p-2 transition-all ${
-              input.trim() && !isLoading
-                ? "bg-blue-600 text-white shadow-md hover:bg-blue-700"
-                : "cursor-not-allowed text-gray-400"
+            disabled={isLoading}
+            className={`mr-2 rounded-lg p-2.5 transition-all duration-300 ${
+              isLoading
+                ? "cursor-not-allowed text-gray-300"
+                : "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/30 hover:scale-105"
             }`}
           >
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
+            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
       </div>

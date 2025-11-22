@@ -1,38 +1,32 @@
-// frontend/src/context/dashboard-context.tsx
 "use client";
 
 import React, { createContext, useContext, useState, useCallback } from "react";
 import { arraySwap } from "@dnd-kit/sortable";
-import { nanoid } from "nanoid";
 
 // Define the shape of a dashboard item
 export interface DashboardItem {
   id: string;
-  widget: string; // "linechart" | "barchart" | "map" | "time" | "dynamic-chart"
+  widget: string;
   bgcolor?: string;
-  // We restore the 'grid' object to match what Area.jsx expects
   grid: {
     colSpan: number;
     rowSpan: number;
   };
-  data?: any; // To store the dynamic data from the AI
+  data?: any;
   title?: string;
 }
 
 interface DashboardContextType {
   items: DashboardItem[];
-  // Updated signature to match what ChatbotPanel sends
   addItem: (widgetType: string, title: string, data: any) => void;
   removeItem: (id: string) => void;
   updateGrid: (id: string, grid: { colSpan: number; rowSpan: number }) => void;
   reorderItems: (activeId: string, overId: string) => void;
 }
 
-const DashboardContext = createContext<DashboardContextType | undefined>(
-  undefined,
-);
+// Inisialisasi dengan null
+const DashboardContext = createContext<DashboardContextType | null>(null);
 
-// Initial default items
 const defaultItems: DashboardItem[] = [
   {
     id: "chart-1",
@@ -60,20 +54,23 @@ const defaultItems: DashboardItem[] = [
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<DashboardItem[]>(defaultItems);
 
-  // Corrected addItem to accept arguments from ChatbotPanel and create a valid 'grid' object
   const addItem = useCallback(
     (widgetType: string, title: string, data: any) => {
       setItems((prev) => {
+        // Gunakan crypto.randomUUID() atau fallback sederhana untuk SSR safe
+        const id = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : `widget-${Math.random().toString(36).substr(2, 9)}`;
+
         const newItem: DashboardItem = {
-          id: `widget-${nanoid()}`,
+          id: `widget-${id}`,
           widget: widgetType,
           title: title,
           data: data,
           bgcolor: "#ffffff",
-          // Default grid size for new AI widgets
           grid: {
-            colSpan: 6, // Half width (assuming 12 col grid)
-            rowSpan: 8, // Reasonable height
+            colSpan: 6,
+            rowSpan: 8,
           },
         };
         return [...prev, newItem];
@@ -117,8 +114,18 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
 export function useDashboard() {
   const context = useContext(DashboardContext);
+  
+  // FIX: Fallback aman untuk mencegah crash saat SSR atau masalah hydration
   if (!context) {
-    throw new Error("useDashboard must be used within a DashboardProvider");
+    console.warn("useDashboard dipanggil di luar DashboardProvider. Menggunakan fallback.");
+    return {
+      items: defaultItems,
+      addItem: () => console.warn("addItem: Provider missing"),
+      removeItem: () => console.warn("removeItem: Provider missing"),
+      updateGrid: () => console.warn("updateGrid: Provider missing"),
+      reorderItems: () => console.warn("reorderItems: Provider missing"),
+    };
   }
+  
   return context;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import Box from "@mui/material/Box";
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
@@ -21,15 +21,13 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  BarChart,
-  Bar,
-  Legend,
 } from "recharts";
 
 // Internal Component Imports
-import { Grid } from "../app/Grid";
+// Pastikan menggunakan @/ jika memungkinkan, atau path relative yang konsisten
+import { Grid } from "../app/Grid"; 
 import { SortableArea } from "../app/SortableArea";
-import { useDashboard } from "@/context/dashboard-context";
+import { useDashboard } from "@/context/dashboard-context"; // Gunakan alias @
 import DynamicWidget from "./dynamic-chart";
 import BPJSIndonesiaMap from "./map";
 
@@ -58,15 +56,13 @@ function WidgetBase({ children, fill, scroll, ...props }) {
   );
 }
 
-// [Keep your existing legacy widgets: LineChartWidget, BarChartWidget, TimeWidget...]
-
+// [WIDGETS PLACEHOLDERS - SAMA SEPERTI SEBELUMNYA]
 function LineChartWidget() {
   return (
     <WidgetBase fill>
       <Box sx={{ flex: 1, width: "100%", height: "100%", p: 1 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={[]} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-             {/* Placeholder for legacy data */}
              <CartesianGrid strokeDasharray="3 3" />
              <XAxis dataKey="time" />
              <YAxis />
@@ -87,8 +83,6 @@ function TimeWidget() {
     return <WidgetBase>Legacy Time Widget</WidgetBase>;
 }
 
-
-// --- WIDGET REGISTRY ---
 const widgets = {
   linechart: LineChartWidget,
   barchart: BarChartWidget,
@@ -97,7 +91,6 @@ const widgets = {
   "dynamic-chart": DynamicWidget,
 };
 
-// --- UPDATED CONTENT COMPONENT ---
 function Content({ data }) {
   const Widget =
     widgets[data.widget] ??
@@ -110,12 +103,11 @@ function Content({ data }) {
         flexDirection: "column",
         width: "100%",
         height: "100%",
-        bgcolor: "background.paper", // Ensure consistent background
+        bgcolor: "background.paper",
         borderRadius: 1,
         overflow: "hidden",
       }}
     >
-      {/* 1. Render Title on Top */}
       {data.title && (
         <Box
           sx={{
@@ -128,26 +120,25 @@ function Content({ data }) {
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            bgcolor: "action.hover", // Subtle contrast header
+            bgcolor: "action.hover",
           }}
         >
           <span>{data.title}</span>
         </Box>
       )}
-
-      {/* 2. Render Widget in remaining space */}
       <Box sx={{ flex: 1, minHeight: 0, position: "relative", p: 0 }}>
-        {/* Pass all props, including the backend 'data' payload */}
         <Widget {...data} type={data.widget} />
       </Box>
     </Box>
   );
 }
 
-// --- MAIN EXPORT ---
 export default function DashBoardContent() {
   const [darkTheme, setDarkTheme] = useState(false);
+  
+  // Hook ini sekarang aman karena ada fallback
   const { items, updateGrid, reorderItems } = useDashboard();
+  
   const itemIds = useMemo(() => items.map((item) => item.id), [items]);
   const [activeId, setActiveId] = useState(null);
 

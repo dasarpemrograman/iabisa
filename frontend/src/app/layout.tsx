@@ -21,8 +21,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>
+    // FIX: Tambahkan suppressHydrationWarning untuk mengabaikan atribut dari ekstensi browser
+    <html lang="en" suppressHydrationWarning>
+      {/* FIX: Terapkan variabel font Geist ke body */}
+      <body className={geist.variable}>
         <DashboardProvider>{children}</DashboardProvider>
       </body>
     </html>
