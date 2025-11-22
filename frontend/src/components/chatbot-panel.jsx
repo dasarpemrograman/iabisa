@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Send,
   Bot,
@@ -10,27 +10,17 @@ import {
   BarChart2,
   AlertCircle,
   PlusCircle,
+  Map as MapIcon, // Import icon Map untuk UI
 } from "lucide-react";
 import { useDashboard } from "@/context/dashboard-context";
 import ReactMarkdown from "react-markdown";
 import DynamicWidget from "./dynamic-chart";
-
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string | any;
-  type?: "text" | "status" | "error" | "chart" | "map";
-  steps?: {
-    label: string;
-    status: "running" | "complete" | "error";
-    content?: string;
-  }[];
-  title?: string;
-}
+import BPJSIndonesiaMap from "./map"; // <--- ADDED: Import component Map
 
 export default function ChatbotPanel() {
   const { addItem } = useDashboard();
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
+  const [messages, setMessages] = useState([
     {
       role: "system",
       content:
@@ -39,7 +29,9 @@ export default function ChatbotPanel() {
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Ref initialized with null for .jsx compatibility
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -117,12 +109,12 @@ export default function ChatbotPanel() {
     }
   };
 
-  const processStreamEvent = (event: any) => {
+  const processStreamEvent = (event) => {
     setMessages((prev) => {
       const newMsgs = [...prev];
       const lastMsg = newMsgs[newMsgs.length - 1];
 
-      // 1. Handle Intermediate Steps (Status updates)
+      // 1. Handle Intermediate Steps
       if (["status", "log", "artifact"].includes(event.type)) {
         const steps = lastMsg.steps || [];
         const existingStepIndex = steps.findIndex(
@@ -143,15 +135,13 @@ export default function ChatbotPanel() {
 
       // 2. Handle Final Response
       if (event.type === "final") {
-        // Determine Type
         const isChart = event.view === "chart" || event.view === "map";
-        lastMsg.type = isChart ? event.view : "text";
+        lastMsg.type = isChart ? event.view : "text"; // 'chart' or 'map'
         lastMsg.content = event.content;
         lastMsg.title = isChart
           ? event.content.title || "AI Insight"
           : undefined;
 
-        // --- FIX: FORCE ALL STEPS TO COMPLETE ---
         if (lastMsg.steps) {
           lastMsg.steps = lastMsg.steps.map((step) => ({
             ...step,
@@ -163,7 +153,7 @@ export default function ChatbotPanel() {
     });
   };
 
-  const handleManualAdd = (msg: Message) => {
+  const handleManualAdd = (msg) => {
     const widgetType = msg.type === "map" ? "map" : "dynamic-chart";
     addItem(widgetType, msg.title || "New Widget", msg.content);
   };
@@ -194,8 +184,8 @@ export default function ChatbotPanel() {
                 msg.role === "user"
                   ? "bg-blue-600 text-white"
                   : msg.role === "system"
-                    ? "bg-red-50 text-red-600"
-                    : "border border-gray-200 bg-white text-indigo-600"
+                  ? "bg-red-50 text-red-600"
+                  : "border border-gray-200 bg-white text-indigo-600"
               }`}
             >
               {msg.role === "user" ? (
@@ -240,17 +230,22 @@ export default function ChatbotPanel() {
                   msg.role === "user"
                     ? "rounded-br-none bg-blue-600 text-white"
                     : msg.type === "error"
-                      ? "border border-red-100 bg-red-50 text-red-800"
-                      : "rounded-bl-none border border-gray-200 bg-gray-100 text-gray-800"
+                    ? "border border-red-100 bg-red-50 text-red-800"
+                    : "rounded-bl-none border border-gray-200 bg-gray-100 text-gray-800"
                 }`}
               >
                 {msg.type === "chart" || msg.type === "map" ? (
                   <div className="flex w-full min-w-[280px] flex-col gap-3">
                     <div className="mb-1 flex items-center justify-between border-b border-gray-200 pb-2">
                       <div className="flex items-center gap-2 font-semibold text-gray-700">
-                        <BarChart2 className="h-4 w-4 text-blue-600" />
+                        {/* Icon Logic */}
+                        {msg.type === "map" ? (
+                            <MapIcon className="h-4 w-4 text-blue-600" />
+                        ) : (
+                            <BarChart2 className="h-4 w-4 text-blue-600" />
+                        )}
                         <span className="text-xs">
-                          {msg.title || "Generated Chart"}
+                          {msg.title || "Generated Insight"}
                         </span>
                       </div>
                       <button
@@ -261,8 +256,13 @@ export default function ChatbotPanel() {
                         Add to Dashboard
                       </button>
                     </div>
-                    <div className="h-48 w-full rounded border border-gray-200 bg-white p-2">
-                      <DynamicWidget data={msg.content} />
+                    <div className="h-48 w-full rounded border border-gray-200 bg-white p-2 relative overflow-hidden">
+                      {/* FIX: Render Map if type is map, otherwise DynamicWidget */}
+                      {msg.type === "map" ? (
+                        <BPJSIndonesiaMap data={msg.content} />
+                      ) : (
+                        <DynamicWidget data={msg.content} />
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -276,7 +276,9 @@ export default function ChatbotPanel() {
             </div>
           </div>
         ))}
-        <div ref={messagesEndRef} />
+        
+        {/* Callback Ref to fix TS/Runtime error */}
+        <div ref={(el) => { messagesEndRef.current = el; }} />
       </div>
 
       {/* Input Area */}

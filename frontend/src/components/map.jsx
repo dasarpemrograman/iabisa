@@ -86,7 +86,12 @@ export default function BPJSIndonesiaMap({ data }) {
     let provKey = "";
     let valKey = "";
 
-    // Robustly handle different data shapes (from Backend or Raw Array)
+    // Robust Check: Support 'predictions' (New Backend) or 'data' (Legacy)
+    if (data) {
+      if (Array.isArray(data)) rows = data;
+      else if (Array.isArray(data.predictions)) rows = data.predictions; // <--- ADDED
+      else if (Array.isArray(data.data)) rows = data.data;
+    }
     if (data && !Array.isArray(data) && data.data) {
       rows = data.data;
       provKey = data.province_key;

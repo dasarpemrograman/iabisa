@@ -17,45 +17,51 @@ import {
 } from "recharts";
 
 export default function DynamicWidget({ data }) {
+  // 1. Determine Configuration Source
   const chartConfig = useMemo(() => {
-    if (!data || !data.react_code) return null;
+    if (!data) return null;
 
-    try {
-      let code = data.react_code;
-
-      // 1. Handle if it's already an object
-      if (typeof code === "object" && code !== null) return code;
-
-      // 2. Clean string input (Remove Markdown code blocks)
-      if (typeof code === "string") {
-        code = code.trim();
-        // Remove ```json and ``` wrappers if present
-        if (code.startsWith("```")) {
-          code = code.replace(/^```(json)?/i, "").replace(/```$/, "");
-        }
-        return JSON.parse(code);
-      }
-
-      return null;
-    } catch (e) {
-      console.error("Failed to parse chart config:", e);
-      return null;
+    // Priority A: Structured Config from Backend (PredictionService)
+    if (data.chart_config) {
+      return data.chart_config;
     }
+
+    // Priority B: Raw React Code from LLM (Legacy/Chatbot)
+    if (data.react_code) {
+      try {
+        let code = data.react_code;
+        if (typeof code === "object" && code !== null) return code;
+        if (typeof code === "string") {
+          code = code.trim().replace(/^```(json)?/i, "").replace(/```$/, "");
+          return JSON.parse(code);
+        }
+      } catch (e) {
+        console.error("Failed to parse chart config:", e);
+      }
+    }
+    return null;
   }, [data]);
 
-  if (!chartConfig || !data.data) {
+  // 2. Determine Data Source
+  // Backend sends 'predictions' list, Legacy might send 'data' list
+  const chartData = data?.predictions || data?.data || [];
+
+  if (!chartConfig || chartData.length === 0) {
     return (
-      <div className="flex h-full animate-pulse items-center justify-center text-sm text-gray-400">
-        Waiting for visualization config...
+      <div className="flex h-full flex-col items-center justify-center text-sm text-gray-400 p-4 text-center">
+        <p>Waiting for data...</p>
+        <span className="text-xs opacity-50">
+           {chartConfig ? "Data empty" : "Config missing"}
+        </span>
       </div>
     );
   }
 
-  const { data: chartData } = data;
   const { type, xAxisKey, series = [], colors = [] } = chartConfig;
   const defaultColors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
 
-  // Styles for Light Mode
+  // ... (Rendering logic remains the same, just ensuring data is passed correctly) ...
+  
   const tooltipStyle = {
     backgroundColor: "#ffffff",
     border: "1px solid #e5e7eb",
@@ -66,7 +72,7 @@ export default function DynamicWidget({ data }) {
 
   const renderChart = () => {
     const commonProps = {
-      data: chartData,
+      data: chartData, // <--- Using the resolved data source
       margin: { top: 10, right: 30, left: 0, bottom: 0 },
     };
 
@@ -75,109 +81,56 @@ export default function DynamicWidget({ data }) {
       style: { fontSize: 12, fontFamily: "sans-serif" },
     };
 
-    // Normalize type to lowercase to handle "LineChart" vs "linechart"
-    const chartType = type?.toLowerCase() || "linechart";
+    // Normalize type
+    const chartType = (type || "line").toLowerCase().replace("chart", "");
 
-    switch (chartType) {
-      case "linechart":
-      case "line":
-        return (
-          <LineChart {...commonProps}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis dataKey={xAxisKey} {...AxisProps} />
-            <YAxis {...AxisProps} />
-            <Tooltip contentStyle={tooltipStyle} />
-            <Legend wrapperStyle={{ paddingTop: "10px" }} />
-            {series.map((s, i) => (
-              <Line
-                key={s.dataKey}
-                type="monotone"
-                dataKey={s.dataKey}
-                name={s.label || s.dataKey}
-                stroke={
-                  s.color ||
-                  colors[i] ||
-                  defaultColors[i % defaultColors.length]
-                }
-                strokeWidth={2}
-                dot={{ r: 3, strokeWidth: 2 }}
-                activeDot={{ r: 6 }}
-              />
-            ))}
-          </LineChart>
-        );
-
-      case "barchart":
-      case "bar":
-        return (
-          <BarChart {...commonProps}>
-            <CartesianGrid
-              strokeDasharray="3 3"
-              stroke="#e5e7eb"
-              vertical={false}
+    if (chartType === "bar") {
+      return (
+        <BarChart {...commonProps}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+          <XAxis dataKey={xAxisKey} {...AxisProps} />
+          <YAxis {...AxisProps} />
+          <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "#f3f4f6" }} />
+          <Legend />
+          {series.map((s, i) => (
+            <Bar
+              key={s.dataKey}
+              dataKey={s.dataKey}
+              name={s.label || s.dataKey}
+              fill={s.color || colors[i] || defaultColors[i % defaultColors.length]}
+              radius={[4, 4, 0, 0]}
             />
-            <XAxis dataKey={xAxisKey} {...AxisProps} />
-            <YAxis {...AxisProps} />
-            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "#f3f4f6" }} />
-            <Legend />
-            {series.map((s, i) => (
-              <Bar
-                key={s.dataKey}
-                dataKey={s.dataKey}
-                name={s.label || s.dataKey}
-                fill={
-                  s.color ||
-                  colors[i] ||
-                  defaultColors[i % defaultColors.length]
-                }
-                radius={[4, 4, 0, 0]}
-              />
-            ))}
-          </BarChart>
-        );
-
-      case "areachart":
-      case "area":
-        return (
-          <AreaChart {...commonProps}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis dataKey={xAxisKey} {...AxisProps} />
-            <YAxis {...AxisProps} />
-            <Tooltip contentStyle={tooltipStyle} />
-            <Legend />
-            {series.map((s, i) => (
-              <Area
-                key={s.dataKey}
-                type="monotone"
-                dataKey={s.dataKey}
-                name={s.label || s.dataKey}
-                stroke={
-                  s.color ||
-                  colors[i] ||
-                  defaultColors[i % defaultColors.length]
-                }
-                fill={
-                  s.color ||
-                  colors[i] ||
-                  defaultColors[i % defaultColors.length]
-                }
-                fillOpacity={0.3}
-              />
-            ))}
-          </AreaChart>
-        );
-
-      default:
-        return (
-          <div className="flex h-full items-center justify-center text-sm text-red-400">
-            Unsupported chart type: {type}
-          </div>
-        );
+          ))}
+        </BarChart>
+      );
     }
+
+    // Default to Line Chart
+    return (
+      <LineChart {...commonProps}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+        <XAxis dataKey={xAxisKey} {...AxisProps} />
+        <YAxis {...AxisProps} />
+        <Tooltip contentStyle={tooltipStyle} />
+        <Legend wrapperStyle={{ paddingTop: "10px" }} />
+        {series.map((s, i) => (
+          <Line
+            key={s.dataKey}
+            type="monotone"
+            dataKey={s.dataKey}
+            name={s.label || s.dataKey}
+            stroke={s.color || colors[i] || defaultColors[i % defaultColors.length]}
+            strokeWidth={2}
+            dot={{ r: 3, strokeWidth: 2 }}
+            activeDot={{ r: 6 }}
+          />
+        ))}
+      </LineChart>
+    );
   };
 
   return (
-    <div className="h-full min-h-[200px] w-full font-sans">
+    <div className="h-full min-h-[200px] w-full font-sans p-2">
       <ResponsiveContainer width="100%" height="100%">
         {renderChart()}
       </ResponsiveContainer>
